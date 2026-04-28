@@ -19,3 +19,7 @@ uploads
 
 # Prisma
 prisma/dev.db
+
+agents
+.claude
+docs
