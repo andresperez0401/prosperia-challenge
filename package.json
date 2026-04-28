@@ -16,7 +16,9 @@
     "db:reset": "prisma migrate reset --force --skip-seed",
     "compose:up": "docker compose up -d",
     "compose:down": "docker compose down",
-    "test:health": "node -e \"require('http').get('http://localhost:3000/health',r=>{console.log('Status',r.statusCode)})\""
+    "test:health": "node -e \"require('http').get('http://localhost:3000/health',r=>{console.log('Status',r.statusCode)})\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@prisma/client": "^5.17.0",
@@ -39,6 +41,7 @@
     "prisma": "^5.17.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.11.0",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.5"
   }
 }

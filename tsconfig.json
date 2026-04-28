@@ -13,5 +13,8 @@
   "include": [
     "src",
     "../prisma/seed.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
   ]
 }

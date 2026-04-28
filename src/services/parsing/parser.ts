@@ -30,6 +30,7 @@ export function naiveParse(rawText: string): Partial<ParsedReceipt> {
     invoiceNumber: extractInvoice(norm),
     vendorName: extractVendorName(rawText),       // se usa el texto original (mayúsculas importan)
     vendorIdentifications: extractVendorIds(norm),
+    paymentMethod: extractPaymentMethod(norm),
     rawText,
   };
 }
@@ -218,10 +219,16 @@ export function extractInvoice(text: string): string | null {
 // Heurística: ignorar líneas-ruido (fecha, dirección, etc.) y preferir
 // líneas que parezcan nombres de empresa (todo MAYÚSCULAS).
 // ---------------------------------------------------------------------------
-const NOISE = /^(fecha|date|tel|fax|www\.|http|email|@|dirección|address|ruc|nit|cif|iva|rif|total|subtotal|gracias|thank|page|pagina|\d)/i;
+const NOISE = /^(fecha|date|tel|fax|www\.|http|email|@|dirección|address|ruc|nit|cif|iva|rif|total|subtotal|gracias|thank|page|pagina|facturar\s*a|datos\s*del|nombre:|ciudad|calle|avenida|av\.|col\.|[—\-]|\d)/i;
+
+// Líneas que parecen dirección, teléfono o email aunque pasen el regex de noise
+const ADDRESS_OR_PHONE = /\d.*(?:calle|av\.|col\.|#\d)|^\(?\+?\d[\d\s\-()]{6,}$|@.*\.|\.com|\.es|\.mx/i;
 
 export function extractVendorName(raw: string): string | null {
-  const lines = raw.split(/\n|\r/).map((l) => l.trim()).filter((l) => l.length > 2 && !NOISE.test(l));
+  const lines = raw
+    .split(/\n|\r/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 2 && !NOISE.test(l) && !ADDRESS_OR_PHONE.test(l));
 
   // Preferir línea en mayúsculas (típico de nombre de empresa) en las primeras 6
   for (const line of lines.slice(0, 6)) {
@@ -251,4 +258,21 @@ export function extractVendorIds(text: string): string[] {
     if (m?.[1]) ids.push(m[1].trim().toUpperCase());
   }
   return [...new Set(ids)]; // sin duplicados
+}
+
+// ---------------------------------------------------------------------------
+// MÉTODO DE PAGO — detecta palabra clave y mapea al enum de ParsedReceipt
+// ---------------------------------------------------------------------------
+const PAYMENT_MAP: [RegExp, ParsedReceipt["paymentMethod"]][] = [
+  [/(?:forma\s*de\s*pago|payment\s*method)\s*[:\-]?\s*tarjeta|paid?\s*(?:by|with|con)\s*(?:tarjeta|card)/i, "CARD"],
+  [/(?:forma\s*de\s*pago|payment\s*method)\s*[:\-]?\s*(?:efectivo|cash)|en\s*efectivo|paid?\s*in\s*cash/i, "CASH"],
+  [/(?:forma\s*de\s*pago|payment\s*method)\s*[:\-]?\s*transferencia|bank\s*transfer|wire\s*transfer/i, "TRANSFER"],
+  [/(?:forma\s*de\s*pago|payment\s*method)\s*[:\-]?\s*(?:otro|other)/i, "OTHER"],
+];
+
+export function extractPaymentMethod(text: string): ParsedReceipt["paymentMethod"] {
+  for (const [re, method] of PAYMENT_MAP) {
+    if (re.test(text)) return method;
+  }
+  return null;
 }

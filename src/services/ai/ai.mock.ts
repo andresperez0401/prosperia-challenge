@@ -17,7 +17,7 @@ export class MockAi implements AiProvider {
       taxPercentage: pctMatch ? Number(pctMatch[1].replace(",", ".")) : null,
       date: dateMatch ? dateMatch[1].replace(/\//g, "-") : null,
       invoiceNumber: invoiceMatch ? String(invoiceMatch[2]).toUpperCase() : null,
-      type: "expense",
+      type: "expense" as const,
       currency: "USD",
       description: null,
       vendorName

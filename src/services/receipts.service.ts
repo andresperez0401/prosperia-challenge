@@ -4,43 +4,106 @@ import { getAiProvider } from "./ai/index.js";
 import { naiveParse } from "./parsing/parser.js";
 import { categorize } from "./parsing/categorizer.js";
 
-export async function processReceipt(filePath: string, meta: { originalName: string; mimeType: string; size: number }) {
+export async function processReceipt(
+  filePath: string,
+  meta: { originalName: string; mimeType: string; size: number },
+) {
   const ocr = getOcrProvider();
   const ai = getAiProvider();
 
   // TODO: Implementar ocr.extractText con Tesseract
   const ocrOut = await ocr.extractText({ filePath, mimeType: meta.mimeType });
 
-  // 1) Reglas rápidas (incluye vendor identifications naive)
+  // 1) Reglas rápidas: extraer campos con regex (rápido, determinístico)
   const base = naiveParse(ocrOut.text);
 
   // TODO: Implementar
-  // 2) Implementar IA opcional (esto mejora la extracción de información con una IA)
-  const aiStruct = await ai.structure(ocrOut.text).catch(() => ({} as any));
+  // 2) IA estructura los campos faltantes o ambiguos
+  const aiStruct = await ai.structure(ocrOut.text).catch(() => ({} as Partial<typeof base>));
 
   // TODO: Implementar
-  // 3) Implementar Categoría heurística
-  const category = await categorize(ocrOut.text);
+  // 3) Categorización: IA relay es la fuente primaria (obligatorio según README).
+  //    Si la IA falla, usamos la heurística de palabras clave como respaldo.
+  let categoryId: number | null = null;
+  try {
+    const aiCat = await ai.categorize({
+      rawText: ocrOut.text,
+      items: (aiStruct as { items?: [] }).items ?? [],
+      ...({ vendorName: (aiStruct as { vendorName?: string | null }).vendorName ?? base.vendorName } as object),
+    } as Parameters<typeof ai.categorize>[0]);
+    categoryId = (aiCat as { category?: number }).category ?? null;
+  } catch {
+    // silently fall through to heuristic
+  }
+  if (categoryId === null) {
+    categoryId = await categorize(ocrOut.text).catch(() => null);
+  }
+  // Fallback final: README dice que categorización es obligatoria.
+  // Si todo falla, usar el primer account de tipo expense disponible.
+  if (categoryId === null) {
+    const fallback = await prisma.account.findFirst({
+      where: { type: "expense" },
+      orderBy: { id: "asc" },
+    });
+    if (fallback) {
+      console.warn("Category: using generic fallback →", fallback.name);
+      categoryId = fallback.id;
+    }
+  }
 
+  // detect currency — símbolo € es inequívoco; $ es ambiguo (MXN/COP/USD), se deja a la IA
+  function detectCurrency(text: string, aiCur?: string | null) {
+    if (!text) return aiCur ?? "USD";
+    if (/€/.test(text)) return "EUR";
+    if (/\bEUR\b/.test(text)) return "EUR";
+    if (/£/.test(text)) return "GBP";
+    if (/\bUSD\b|\bUS\$\b/.test(text)) return "USD";
+    if (/\bMXN\b|México|Mexico/i.test(text)) return "MXN";
+    if (/\bCOP\b|Colombia/i.test(text)) return "COP";
+    if (/\bPEN\b|S\/\.?\s?\d/i.test(text)) return "PEN";
+    // $ solo es ambiguo — confiar en la IA o defaultear USD
+    return aiCur ?? "USD";
+  }
 
-  // TODO: Modificar para poder guardar
+  const detectedCurrency = detectCurrency(ocrOut.text, (aiStruct as { currency?: string | null }).currency ?? null);
+
+  // enrich category with account metadata if available
+  let categoryName: string | null = null;
+  let categoryType: string | null = null;
+  if (categoryId !== null) {
+    const acc = await prisma.account.findUnique({ where: { id: categoryId } });
+    if (acc) {
+      categoryName = acc.name;
+      categoryType = String(acc.type);
+    }
+  }
+
   const json = {
-    amount: (aiStruct as any).amount ?? base.amount ?? null,
-    subtotalAmount: (aiStruct as any).subtotalAmount ?? base.subtotalAmount ?? null,
-    taxAmount: (aiStruct as any).taxAmount ?? base.taxAmount ?? null,
-    taxPercentage: (aiStruct as any).taxPercentage ?? base.taxPercentage ?? null,
-    type: (aiStruct as any).type ?? "expense",
-    currency: (aiStruct as any).currency ?? "USD",
-    date: (aiStruct as any).date ?? base.date ?? null,
-    paymentMethod: (aiStruct as any).paymentMethod ?? null,
-    description: (aiStruct as any).description ?? null,
-    invoiceNumber: (aiStruct as any).invoiceNumber ?? base.invoiceNumber ?? null,
-    category: category,
-    vendorId: (aiStruct as any).vendorId ?? null,
-    vendorName: (aiStruct as any).vendorName ?? base.vendorName ?? null,
-    vendorIdentifications: (aiStruct as any).vendorIdentifications ?? base.vendorIdentifications ?? [],
-    items: (aiStruct as any).items ?? [],
-    rawText: ocrOut.text
+    amount: (aiStruct as { amount?: number | null }).amount ?? base.amount ?? null,
+    subtotalAmount:
+      (aiStruct as { subtotalAmount?: number | null }).subtotalAmount ?? base.subtotalAmount ?? null,
+    taxAmount: (aiStruct as { taxAmount?: number | null }).taxAmount ?? base.taxAmount ?? null,
+    taxPercentage:
+      (aiStruct as { taxPercentage?: number | null }).taxPercentage ?? base.taxPercentage ?? null,
+    type: (aiStruct as { type?: string }).type ?? "expense",
+    currency: detectedCurrency,
+    date: (aiStruct as { date?: string | null }).date ?? base.date ?? null,
+    paymentMethod: (aiStruct as { paymentMethod?: string | null }).paymentMethod ?? base.paymentMethod ?? null,
+    description: (aiStruct as { description?: string | null }).description ?? null,
+    invoiceNumber:
+      (aiStruct as { invoiceNumber?: string | null }).invoiceNumber ?? base.invoiceNumber ?? null,
+    category: categoryId,
+    categoryName,
+    categoryType,
+    vendorId: null,
+    vendorName:
+      (aiStruct as { vendorName?: string | null }).vendorName ?? base.vendorName ?? null,
+    vendorIdentifications:
+      (aiStruct as { vendorIdentifications?: string[] }).vendorIdentifications ??
+      base.vendorIdentifications ??
+      [],
+    items: ((aiStruct as { items?: unknown[] }).items ?? []) as object[],
+    rawText: ocrOut.text,
   };
 
   const saved = await prisma.receipt.create({
@@ -52,8 +115,8 @@ export async function processReceipt(filePath: string, meta: { originalName: str
       rawText: ocrOut.text,
       json,
       ocrProvider: process.env.OCR_PROVIDER || "tesseract",
-      aiProvider: process.env.AI_PROVIDER || "mock"
-    }
+      aiProvider: process.env.AI_PROVIDER || "mock",
+    },
   });
 
   return saved;
