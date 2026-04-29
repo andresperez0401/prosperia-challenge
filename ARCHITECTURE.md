@@ -1011,20 +1011,3 @@ describe("parseAmount — edge cases adicionales", () => {
 │  El relay agrega la API key real de OpenAI en su servidor        │
 └──────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Resumen de garantías del sistema
-
-| Escenario | Comportamiento |
-|---|---|
-| OCR produce texto perfecto | Parser regex extrae todo; IA confirma o mejora |
-| OCR fusiona columnas sin espacio | `extractSubtotal` aún funciona (separador opcional) |
-| OCR produce "IVA 21% 105€" | `extractTax` captura 105, no 21 (patrón corregido) |
-| IA falla por red o timeout | Se usa solo el resultado del regex |
-| IA no puede categorizar | Se usa heurística de palabras clave |
-| Heurística no encuentra match | Se usa primer account de tipo `expense` |
-| Archivo es PDF digital | pdf-parse extrae texto sin OCR visual (más rápido) |
-| Archivo es PDF escaneado (imagen) | Tesseract actúa como fallback si pdf-parse devuelve vacío |
-| Divisa es $ sin contexto | Se delega a IA; default USD si IA tampoco lo sabe |
-| Total ≠ subtotal + tax (ej: IRPF) | reconcile preserva valores extraídos sin forzar coherencia |
