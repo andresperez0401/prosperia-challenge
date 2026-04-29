@@ -3,6 +3,7 @@ import { getOcrProvider } from "./ocr/index.js";
 import { getAiProvider } from "./ai/index.js";
 import { naiveParse } from "./parsing/parser.js";
 import { categorize } from "./parsing/categorizer.js";
+import { detectCurrency } from "./parsing/detect.currency.js";
 
 export async function processReceipt(
   filePath: string,
@@ -52,19 +53,6 @@ export async function processReceipt(
   }
 
   // detect currency — símbolo € es inequívoco; $ es ambiguo (MXN/COP/USD), se deja a la IA
-  function detectCurrency(text: string, aiCur?: string | null) {
-    if (!text) return aiCur ?? "USD";
-    if (/€/.test(text)) return "EUR";
-    if (/\bEUR\b/.test(text)) return "EUR";
-    if (/£/.test(text)) return "GBP";
-    if (/\bUSD\b|\bUS\$\b/.test(text)) return "USD";
-    if (/\bMXN\b|México|Mexico/i.test(text)) return "MXN";
-    if (/\bCOP\b|Colombia/i.test(text)) return "COP";
-    if (/\bPEN\b|S\/\.?\s?\d/i.test(text)) return "PEN";
-    // $ solo es ambiguo — confiar en la IA o defaultear USD
-    return aiCur ?? "USD";
-  }
-
   const detectedCurrency = detectCurrency(ocrOut.text, (aiStruct as { currency?: string | null }).currency ?? null);
 
   // enrich category with account metadata if available

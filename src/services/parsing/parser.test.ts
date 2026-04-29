@@ -128,3 +128,58 @@ Gracias por su visita`;
     expect(result.vendorIdentifications).toContain("20123456789");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests adicionales — casos críticos identificados en auditoría
+// ---------------------------------------------------------------------------
+
+describe("extractTax — formato porcentaje-luego-monto (bug IVA 21% 105€)", () => {
+  it("no captura el porcentaje como monto en 'IVA 21% 105€'", () =>
+    expect(extractTax("iva 21% 105€")).toBe(105));
+
+  it("no captura el porcentaje en 'IVA 21 % 105 €' (con espacios alrededor de %)", () =>
+    expect(extractTax("iva 21 % 105 €")).toBe(105));
+
+  it("extrae con separador explícito 'IVA (21%): 105'", () =>
+    expect(extractTax("iva (21%): 105")).toBe(105));
+
+  it("extrae con separador 'IVA: 105' (sin porcentaje)", () =>
+    expect(extractTax("iva: 105")).toBe(105));
+
+  it("no retorna null para formato con porcentaje + monto", () =>
+    expect(extractTax("iva 7% 35€")).toBe(35));
+});
+
+describe("extractSubtotal — sin separador por fusión de columnas en OCR", () => {
+  it("extrae 'subtotal500' sin ningún separador (OCR column-merge)", () =>
+    expect(extractSubtotal("subtotal500")).toBe(500));
+
+  it("extrae 'subtotal 500€' con espacio normal", () =>
+    expect(extractSubtotal("subtotal 500€")).toBe(500));
+
+  it("extrae 'subtotal: 500' con dos puntos", () =>
+    expect(extractSubtotal("subtotal: 500")).toBe(500));
+});
+
+describe("reconcile — casos con valores inconsistentes", () => {
+  it("preserva subtotal y tax cuando total no cuadra (ej: factura con IRPF)", () =>
+    // 500 + 105 ≠ 500 → reconcile no puede arreglar → devuelve lo que extrajo
+    expect(reconcile(500, 500, 105, 21)).toEqual({ subtotal: 500, tax: 105 }));
+
+  it("no deriva tax negativo cuando subtotal > total", () => {
+    const result = reconcile(80, 100, null, null);
+    // derived = 80 - 100 = -20, que es < 0, así que no debería aplicar
+    expect(result.tax).toBeNull();
+  });
+});
+
+describe("parseAmount — edge cases adicionales", () => {
+  it("maneja '1.000' como mil en formato EU (sin decimales → miles)", () =>
+    expect(parseAmount("1.000")).toBe(1000));
+
+  it("maneja '500,00' como quinientos en formato EU", () =>
+    expect(parseAmount("500,00")).toBe(500));
+
+  it("retorna null para string de solo símbolos", () =>
+    expect(parseAmount("€$")).toBeNull());
+});

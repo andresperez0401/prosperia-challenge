@@ -68,10 +68,7 @@ export function parseAmount(str: string): number | null {
 function firstMatch(text: string, patterns: RegExp[]): number | null {
   for (const re of patterns) {
     const m = text.match(re);
-    if (m) {
-      const raw = m[2] ?? m[1];
-      if (raw) return parseAmount(raw);
-    }
+    if (m?.[1]) return parseAmount(m[1]);
   }
   return null;
 }
@@ -95,10 +92,11 @@ export function extractTotal(norm: string): number | null {
 // ---------------------------------------------------------------------------
 export function extractSubtotal(norm: string): number | null {
   return firstMatch(norm, [
-    /subtotal\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
-    /sub\s*total\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
-    /base\s*imponible\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
-    /base\s*gravable\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
+    // Separador opcional: el OCR puede fusionar columnas sin espacio ("Subtotal500€")
+    /subtotal\s*[:\s=]?\s*\$?\s*([\d.,]+)/i,
+    /sub\s*total\s*[:\s=]?\s*\$?\s*([\d.,]+)/i,
+    /base\s*imponible\s*[:\s=]?\s*\$?\s*([\d.,]+)/i,
+    /base\s*gravable\s*[:\s=]?\s*\$?\s*([\d.,]+)/i,
     /\bneto\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
   ]);
 }
@@ -108,10 +106,13 @@ export function extractSubtotal(norm: string): number | null {
 // ---------------------------------------------------------------------------
 export function extractTax(norm: string): number | null {
   return firstMatch(norm, [
-    // "IVA 12%: 1.45" o "IVA (12%): 1.45" — acepta paréntesis alrededor del porcentaje
-    /(?:iva|igv|itbms|itbis|vat|tax|impuesto)\s*(?:\(?\d{1,2}(?:[.,]\d{1,2})?\s*%\)?\s*)?\s*[:\s]\s*\$?\s*([\d.,]+)/i,
-    /(?:iva|igv|itbms|itbis|vat|tax)\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
-    /impuesto\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
+    // "IVA 21% 105€" o "IVA (21%): 105€" — porcentaje seguido del monto.
+    // Exigir el % antes del número evita capturar "21" en lugar de "105".
+    /(?:iva|igv|itbms|itbis|vat|tax|impuesto)\s+\(?\d{1,2}(?:[.,]\d{1,2})?\s*%\)?\s*:?\s*\$?\s*([\d.,]+)/i,
+    // "IVA: 105€" — separador explícito con dos puntos (sin porcentaje visible)
+    /(?:iva|igv|itbms|itbis|vat|tax|impuesto)\s*:\s*\$?\s*([\d.,]+)/i,
+    // "IVA 105€" — solo espacio, pero NO si lo que sigue es dígitos+% (sería una tasa)
+    /(?:iva|igv|itbms|itbis|vat|tax|impuesto)\s+(?!\d{1,3}\s*%)\$?\s*([\d.,]+)/i,
   ]);
 }
 
@@ -217,16 +218,6 @@ export function extractInvoice(text: string): string | null {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// NOMBRE DEL VENDOR
-// Estrategia robusta:
-//   1) Ubicar la primera línea con NIT/RUC/CIF (la del emisor).
-//   2) Caminar hacia ARRIBA recolectando líneas-candidato (es el patrón típico
-//      de facturas: razón social en las líneas previas al tax ID).
-//   3) Limpiar tokens basura tipo "FACTURA DE VENTA" que pdf-parse a veces
-//      pega cuando la columna lateral está al lado del nombre.
-//   4) Fallback: heurística sobre las primeras líneas del documento.
-// ---------------------------------------------------------------------------
 const NOISE = /^(fecha|date|tel|fax|www\.|http|email|@|dirección|address|ruc|nit|cif|iva|rif|total|subtotal|gracias|thank|page|pagina|facturar\s*a|cliente|customer|bill\s*to|sold\s*to|datos\s*del|nombre:|raz[oó]n\s*social|moneda|currency|n[uú]mero|number|ciudad|calle|avenida|av\.|col\.|[—\-]|\d)/i;
 
 const ADDRESS_OR_PHONE = /\d.*(?:calle|av\.|col\.|#\d)|^\(?\+?\d[\d\s\-()]{6,}$|@.*\.|\.com|\.es|\.mx|\.co\b/i;
