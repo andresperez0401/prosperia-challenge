@@ -21,6 +21,9 @@ export type ParsedReceipt = {
   vendorId: number | null;
   vendorName?: string | null;
   vendorIdentifications?: string[];
+  customerName?: string | null;
+  customerIdentifications?: string[];
+  ocrConfidence?: number | null;
   items: Item[];
   rawText: string;
 };

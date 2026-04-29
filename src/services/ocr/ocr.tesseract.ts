@@ -1,12 +1,8 @@
 import { OcrProvider } from "./ocr.interface.js";
 import Tesseract from "tesseract.js";
 import { readFileSync } from "fs";
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
 
 export class TesseractOcr implements OcrProvider {
-  // TODO: Implementar extracción de información con Tesseract
   async extractText({ filePath, mimeType }: { filePath: string; mimeType: string }) {
     try {
       if (mimeType === "application/pdf") {
@@ -19,14 +15,25 @@ export class TesseractOcr implements OcrProvider {
     }
   }
 
-  // ── Imagen → Tesseract con PSM 6 (bloque de texto uniforme = mejor para recibos)
+  // ── Imagen → primero PSM SINGLE_BLOCK (recibos impresos limpios).
+  //    Si la confianza es baja o el texto es corto (recibo manuscrito o de
+  //    baja calidad), reintenta con SPARSE_TEXT y elige el mejor resultado.
   private async extractFromImage(filePath: string) {
+    const primary = await this.runTesseract(filePath, Tesseract.PSM.SINGLE_BLOCK);
+    if (primary.confidence >= 0.7 && primary.text.length >= 50) return primary;
+
+    const sparse = await this.runTesseract(filePath, Tesseract.PSM.SPARSE_TEXT);
+    // Score combinado: confianza ponderada por cantidad de texto extraído
+    const score = (r: { text: string; confidence: number }) =>
+      r.confidence * Math.log(Math.max(r.text.length, 1));
+    return score(sparse) > score(primary) ? sparse : primary;
+  }
+
+  private async runTesseract(filePath: string, psm: Tesseract.PSM) {
     const worker = await Tesseract.createWorker("eng+spa");
     try {
       await worker.setParameters({
-        // PSM 6: asume un único bloque de texto uniforme — ideal para facturas/recibos
-        tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-        // Preservar espacios entre palabras para mantener columnas legibles
+        tessedit_pageseg_mode: psm,
         preserve_interword_spaces: "1",
       });
       const result = await worker.recognize(filePath);
@@ -41,15 +48,14 @@ export class TesseractOcr implements OcrProvider {
     }
   }
 
-  // ── PDF → primero intentamos capa de texto digital (rápido y exacto)
+  // ── PDF → extrae capa de texto digital con pdf-parse v2 (rápido y exacto)
   private async extractFromPdf(filePath: string) {
-    const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
-      b: Buffer,
-    ) => Promise<{ text: string }>;
+    const { PDFParse } = await import("pdf-parse");
     const buffer = readFileSync(filePath);
-    const { text } = await pdfParse(buffer);
-    const cleaned = (text ?? "").trim();
-    const confidence = cleaned.length >= 40 ? 0.9 : cleaned.length > 0 ? 0.5 : 0;
-    return { text: cleaned, confidence };
+    const parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    const text = (result.text ?? "").trim();
+    const confidence = text.length >= 40 ? 0.9 : text.length > 0 ? 0.5 : 0;
+    return { text, confidence };
   }
 }

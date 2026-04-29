@@ -1,4 +1,4 @@
-import { ParsedReceipt } from "../../types/receipt.js";
+import { ParsedReceipt, Item } from "../../types/receipt.js";
 
 // ===========================================================================
 // PARSER DE REGLAS
@@ -30,7 +30,10 @@ export function naiveParse(rawText: string): Partial<ParsedReceipt> {
     invoiceNumber: extractInvoice(norm),
     vendorName: extractVendorName(rawText),       // se usa el texto original (mayúsculas importan)
     vendorIdentifications: extractVendorIds(norm),
+    customerName: extractCustomerName(rawText),
+    customerIdentifications: extractCustomerIds(rawText),
     paymentMethod: extractPaymentMethod(norm),
+    items: extractItems(rawText),
     rawText,
   };
 }
@@ -105,8 +108,8 @@ export function extractSubtotal(norm: string): number | null {
 // ---------------------------------------------------------------------------
 export function extractTax(norm: string): number | null {
   return firstMatch(norm, [
-    // "IVA 12%: 1.45" o "IVA (12%): 1.45"
-    /(?:iva|igv|itbms|itbis|vat|tax|impuesto)\s*(?:\d{1,2}\s*%\s*)?\s*[:\s]\s*\$?\s*([\d.,]+)/i,
+    // "IVA 12%: 1.45" o "IVA (12%): 1.45" — acepta paréntesis alrededor del porcentaje
+    /(?:iva|igv|itbms|itbis|vat|tax|impuesto)\s*(?:\(?\d{1,2}(?:[.,]\d{1,2})?\s*%\)?\s*)?\s*[:\s]\s*\$?\s*([\d.,]+)/i,
     /(?:iva|igv|itbms|itbis|vat|tax)\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
     /impuesto\s*[:\s=]\s*\$?\s*([\d.,]+)/i,
   ]);
@@ -204,7 +207,7 @@ export function extractDate(text: string): string | null {
 // ---------------------------------------------------------------------------
 export function extractInvoice(text: string): string | null {
   const patterns = [
-    /(?:^|[^a-z])(?:factura|invoice|recibo|receipt|n[oº°]\.?|no\.?)\s*[:\-#\s]\s*([a-z0-9][-a-z0-9]{2,})/im,
+    /(?:^|[^a-z])(?:factura|invoice|recibo|receipt|n[uú]mero|n[oº°]\.?|no\.?)\s*[:\-#\s]\s*([a-z0-9][-a-z0-9]{2,})/im,
     /(?:^|[^a-z])(?:comprobante|folio|ticket|ref)\s*[:\-#\s]\s*([a-z0-9][-a-z0-9]{2,})/im,
   ];
   for (const re of patterns) {
@@ -216,25 +219,103 @@ export function extractInvoice(text: string): string | null {
 
 // ---------------------------------------------------------------------------
 // NOMBRE DEL VENDOR
-// Heurística: ignorar líneas-ruido (fecha, dirección, etc.) y preferir
-// líneas que parezcan nombres de empresa (todo MAYÚSCULAS).
+// Estrategia robusta:
+//   1) Ubicar la primera línea con NIT/RUC/CIF (la del emisor).
+//   2) Caminar hacia ARRIBA recolectando líneas-candidato (es el patrón típico
+//      de facturas: razón social en las líneas previas al tax ID).
+//   3) Limpiar tokens basura tipo "FACTURA DE VENTA" que pdf-parse a veces
+//      pega cuando la columna lateral está al lado del nombre.
+//   4) Fallback: heurística sobre las primeras líneas del documento.
 // ---------------------------------------------------------------------------
-const NOISE = /^(fecha|date|tel|fax|www\.|http|email|@|dirección|address|ruc|nit|cif|iva|rif|total|subtotal|gracias|thank|page|pagina|facturar\s*a|datos\s*del|nombre:|ciudad|calle|avenida|av\.|col\.|[—\-]|\d)/i;
+const NOISE = /^(fecha|date|tel|fax|www\.|http|email|@|dirección|address|ruc|nit|cif|iva|rif|total|subtotal|gracias|thank|page|pagina|facturar\s*a|cliente|customer|bill\s*to|sold\s*to|datos\s*del|nombre:|raz[oó]n\s*social|moneda|currency|n[uú]mero|number|ciudad|calle|avenida|av\.|col\.|[—\-]|\d)/i;
 
-// Líneas que parecen dirección, teléfono o email aunque pasen el regex de noise
-const ADDRESS_OR_PHONE = /\d.*(?:calle|av\.|col\.|#\d)|^\(?\+?\d[\d\s\-()]{6,}$|@.*\.|\.com|\.es|\.mx/i;
+const ADDRESS_OR_PHONE = /\d.*(?:calle|av\.|col\.|#\d)|^\(?\+?\d[\d\s\-()]{6,}$|@.*\.|\.com|\.es|\.mx|\.co\b/i;
+
+// Cabeceras tipo "FACTURA DE VENTA" que NO son parte del nombre del vendor
+const HEADER_TOKENS = /^(factura|invoice|receipt|recibo|ticket|comprobante|nota|venta|order|pedido|boleta)/i;
+
+const TAX_ID_LABEL = /^\s*(?:nit|ruc|cif|rif|cuit|ein|tax\s*id)\s*[:.\-]/i;
+
+function isVendorCandidate(line: string): boolean {
+  if (line.length < 3 || line.length > 100) return false;
+  if (NOISE.test(line)) return false;
+  if (ADDRESS_OR_PHONE.test(line)) return false;
+  if (HEADER_TOKENS.test(line)) return false;
+  return true;
+}
+
+// Quita cabeceras pegadas al final del nombre ("ACME S.A.S. FACTURA DE" → "ACME S.A.S.")
+function cleanVendorName(name: string): string {
+  let s = name.trim();
+  const STRIP_END = /\s+(factura(?:\s+de(?:\s+venta|\s+compra)?)?|invoice|receipt|recibo|venta|compra|de)\s*$/i;
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(STRIP_END, "");
+  } while (s !== prev);
+  // Preservar puntos de abreviaciones (S.A.S., Ltd., Inc.) — solo limpiar espacios/comas/dos-puntos
+  return s.replace(/^[\s,:]+|[\s,:]+$/g, "").trim().slice(0, 100);
+}
 
 export function extractVendorName(raw: string): string | null {
-  const lines = raw
-    .split(/\n|\r/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 2 && !NOISE.test(l) && !ADDRESS_OR_PHONE.test(l));
+  const lines = raw.split(/\n|\r/).map((l) => l.trim()).filter(Boolean);
 
-  // Preferir línea en mayúsculas (típico de nombre de empresa) en las primeras 6
-  for (const line of lines.slice(0, 6)) {
-    if (/^[A-ZÁÉÍÓÚÑÜ\s&.,'\-]{4,80}$/.test(line)) return line.slice(0, 100);
+  // Estrategia 1 — anclar en el primer tax ID y subir hasta 3 líneas razonables
+  const taxIdIdx = lines.findIndex((l) => TAX_ID_LABEL.test(l));
+  if (taxIdIdx > 0) {
+    const parts: string[] = [];
+    for (let i = taxIdIdx - 1; i >= 0 && parts.length < 3; i--) {
+      const line = lines[i];
+      if (isVendorCandidate(line)) parts.unshift(line);
+      else if (parts.length > 0) break;
+    }
+    if (parts.length > 0) {
+      const cleaned = cleanVendorName(parts.join(" "));
+      if (cleaned.length >= 3) return cleaned;
+    }
   }
-  return lines[0]?.slice(0, 100) ?? null;
+
+  // Estrategia 2 — fallback: primera línea-candidato en mayúsculas en el top
+  for (const line of lines.slice(0, 8)) {
+    if (!isVendorCandidate(line)) continue;
+    if (/^[A-ZÁÉÍÓÚÑÜ\s&.,'\-]{4,80}$/.test(line)) return cleanVendorName(line);
+  }
+  // Estrategia 3 — primera línea-candidato cualquiera
+  for (const line of lines.slice(0, 8)) {
+    if (isVendorCandidate(line)) return cleanVendorName(line);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// CUSTOMER (a quién se le factura)
+// Busca etiquetas explícitas: "Cliente:", "Facturado a:", "Bill to:", etc.
+// ---------------------------------------------------------------------------
+const CUSTOMER_LABEL =
+  /(?:^|\n)\s*(?:cliente|customer|facturado\s*a|bill\s*to|sold\s*to|raz[oó]n\s*social|nombre\s*del?\s*cliente|sr\.?|sra\.?|señor[\(\)es]*)\s*[:\-]\s*([^\n]{2,80})/i;
+
+export function extractCustomerName(raw: string): string | null {
+  const m = raw.match(CUSTOMER_LABEL);
+  if (!m?.[1]) return null;
+  const name = m[1].trim().replace(/[\s.,;]+$/, "");
+  // Filtrar valores claramente no-nombre (números, fechas)
+  if (name.length < 2) return null;
+  if (/^[\d\-\/.\s]+$/.test(name)) return null;
+  return name.slice(0, 100);
+}
+
+// IDs del cliente — solo si aparecen en bloque explícito de cliente
+export function extractCustomerIds(raw: string): string[] {
+  // Buscar bloque tras "Cliente:" / "Facturado a:" hasta el siguiente label
+  const blockMatch = raw.match(/(?:cliente|customer|facturado\s*a|bill\s*to)[\s\S]{0,300}/i);
+  if (!blockMatch) return [];
+  const block = blockMatch[0];
+  const ids: string[] = [];
+  for (const re of ID_PATTERNS) {
+    const m = block.match(re);
+    if (m?.[1]) ids.push(m[1].trim().toUpperCase());
+  }
+  return [...new Set(ids)];
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +325,7 @@ export function extractVendorName(raw: string): string | null {
 const ID_PATTERNS: RegExp[] = [
   /ruc\s*[:\-]?\s*([0-9]{1,3}-[0-9]{3,8}-[0-9]{1,2})/i,    // RUC Panamá
   /ruc\s*[:\-]?\s*([0-9]{6,12})/i,                         // RUC Perú
-  /nit\s*[:\-]?\s*([0-9]{6,10}(?:-\d)?)/i,                 // NIT Colombia
+  /nit\s*[:\-]?\s*([\d.]{6,15}(?:-\d)?)/i,                 // NIT Colombia (acepta 900.555.123-8)
   /cif\s*[:\-]?\s*([a-z]\d{7}[0-9a-z])/i,                  // CIF España
   /rif\s*[:\-]?\s*([a-z]-\d{8}-\d)/i,                      // RIF Venezuela
   /cuit\s*[:\-]?\s*([\d-]{10,13})/i,                       // CUIT Argentina
@@ -275,4 +356,41 @@ export function extractPaymentMethod(text: string): ParsedReceipt["paymentMethod
     if (re.test(text)) return method;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// LÍNEAS DE DETALLE (items)
+// Detecta filas de producto con formato: descripción  cant  precioUnit  total
+// Funciona con tablas de recibos donde las columnas están separadas por espacios.
+// ---------------------------------------------------------------------------
+const ITEM_SKIP = /^(descripci[oó]n|cant\.?|precio|p\.\s*unit|total|subtotal|iva|igv|vat|impuesto|gracias|thank|fecha|factura|nit|ruc|cif|cliente|moneda|n[uú]mero|direcci[oó]n|tel[eé]f)/i;
+
+export function extractItems(rawText: string): Item[] {
+  const lines = rawText.split(/\n|\r/).map((l) => l.trim()).filter((l) => l.length > 0);
+  const items: Item[] = [];
+
+  // Patrón: descripción, luego qty (entero), luego dos montos
+  const RE = /^(.+?)\s+(\d{1,4})\s+\$?\s*([\d,]+\.?\d*)\s+\$?\s*([\d,]+\.?\d*)\s*$/;
+
+  for (const line of lines) {
+    if (ITEM_SKIP.test(line)) continue;
+
+    const m = line.match(RE);
+    if (!m) continue;
+
+    const description = m[1].trim();
+    const quantity = parseInt(m[2], 10);
+    const unitPrice = parseAmount(m[3]);
+    const total = parseAmount(m[4]);
+
+    if (!unitPrice || !total || quantity < 1 || quantity > 9999) continue;
+
+    // Verificar coherencia: total ≈ qty * unitPrice (tolerancia 10%)
+    const expected = quantity * unitPrice;
+    if (Math.abs(expected - total) / Math.max(total, 0.01) > 0.10) continue;
+
+    items.push({ description, quantity, unitPrice, total, category: null });
+  }
+
+  return items;
 }

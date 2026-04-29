@@ -206,6 +206,18 @@
       </div>
     </div>
 
+    <!-- Customer -->
+    <div class="card" id="cCustomer" style="display:none">
+      <div class="sec">Cliente / Facturado a</div>
+      <div class="vendor-row">
+        <div class="vendor-av" id="cuAv" style="background:var(--green-light);color:var(--green)"></div>
+        <div>
+          <div class="vendor-name" id="cuName"></div>
+          <div class="tags" id="cuIds"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Financial -->
     <div class="card" id="cFin" style="display:none">
       <div class="sec">Resumen financiero</div>
@@ -336,6 +348,17 @@ function render(data) {
     show('cVendor');
   }
 
+  /* Customer — solo si se detectó */
+  const cuname = j.customerName;
+  if (cuname) {
+    document.getElementById('cuAv').textContent = cuname.charAt(0).toUpperCase();
+    document.getElementById('cuName').textContent = cuname;
+    const cuIds = j.customerIdentifications ?? [];
+    document.getElementById('cuIds').innerHTML = cuIds
+      .map(id => `<span class="badge b-green">${id}</span>`).join('');
+    show('cCustomer');
+  }
+
   /* Financial — mostrar si hay al menos un monto */
   const hasAmount = j.amount!=null || j.subtotalAmount!=null || j.taxAmount!=null;
   if (hasAmount) {
@@ -396,9 +419,17 @@ function render(data) {
   }
 
   /* Meta */
+  let confPill = '';
+  if (typeof j.ocrConfidence === 'number') {
+    const pct = Math.round(j.ocrConfidence * 100);
+    const cls = pct >= 80 ? 'b-green' : pct >= 50 ? 'b-amber' : 'b-gray';
+    const label = pct >= 80 ? 'alta' : pct >= 50 ? 'media' : 'baja';
+    confPill = `<span class="badge ${cls}">📊 Confianza ${label} (${pct}%)</span>`;
+  }
   document.getElementById('mRow').innerHTML =
     `<span class="pill">🔍 OCR: ${data.ocrProvider||'—'}</span>` +
-    `<span class="pill">🤖 IA: ${data.aiProvider||'—'}</span>`;
+    `<span class="pill">🤖 IA: ${data.aiProvider||'—'}</span>` +
+    confPill;
   document.getElementById('mId').textContent = `Receipt ID: ${data.id||''}`;
   document.getElementById('jPre').textContent = JSON.stringify(data, null, 2);
   show('cMeta');
@@ -417,7 +448,7 @@ frm.addEventListener('submit', async e => {
   e.preventDefault();
   errEl.style.display='none';
   res.style.display='none';
-  ['cVendor','cFin','cItems','cDetail','cMeta'].forEach(id=>{
+  ['cVendor','cCustomer','cFin','cItems','cDetail','cMeta'].forEach(id=>{
     document.getElementById(id).style.display='none';
   });
   // resetear category a estado default

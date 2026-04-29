@@ -31,7 +31,7 @@ export class OpenAiProvider implements AiProvider {
 
   // TODO: Implementar extracción de información con IA del rawText
   async structure(rawText: string): Promise<Partial<ParsedReceipt>> {
-    const systemPrompt = `You are a receipt/invoice OCR parser. Extract ALL structured data from the receipt text and return ONLY valid JSON matching this exact schema (use null for missing fields, never omit keys):
+    const systemPrompt = `You are a receipt/invoice OCR parser. Extract ALL structured data from the receipt text — including handwritten or messy ones — and return ONLY valid JSON matching this exact schema (use null for missing fields, never omit keys):
 {
   "amount": number | null,
   "subtotalAmount": number | null,
@@ -45,6 +45,8 @@ export class OpenAiProvider implements AiProvider {
   "invoiceNumber": string | null,
   "vendorName": string | null,
   "vendorIdentifications": string[],
+  "customerName": string | null,
+  "customerIdentifications": string[],
   "items": [{ "description": string, "quantity": number, "unitPrice": number, "total": number }]
 }
 Extraction rules:
@@ -52,10 +54,15 @@ Extraction rules:
 - taxPercentage: number only (e.g. 21 for "IVA 21%", 0 for "Impuesto (0%)").
 - currency: detect from unambiguous signals — € → "EUR", £ → "GBP", "EUR" keyword → "EUR", "USD" keyword → "USD", "MXN"/"México" → "MXN", "COP"/"Colombia" → "COP", "PEN"/"S/" → "PEN". If only "$" with no other context, use null so the system decides.
 - paymentMethod: map keywords — tarjeta/card/visa/mastercard → "CARD", efectivo/cash → "CASH", transferencia/transfer/banco/wire → "TRANSFER". Others → "OTHER".
-- vendorIdentifications: ALL tax IDs (RUC, NIT, CIF, RIF, CUIT, EIN) formatted as "TYPE: VALUE".
+- VENDOR vs CUSTOMER — CRITICAL distinction:
+  * vendorName = WHO ISSUES the receipt (the business/seller). Usually at the top, with the tax ID right after.
+  * customerName = WHO RECEIVES the receipt (the buyer). Found AFTER labels like "Cliente:", "Bill to:", "Facturado a:", "Sr./Sra.".
+  * vendorIdentifications = tax IDs of the SELLER only (the one near the top).
+  * customerIdentifications = tax IDs of the BUYER only (inside the customer block).
+  * Never mix the two. If unsure who is who, set customer fields to null/[].
 - items: THIS IS CRITICAL — scan EVERY line of the receipt for product/service rows. A row usually has: description, quantity, unit price, total. Even if columns are misaligned by OCR, extract what you can. Example row "Nuggets veganos 2 $2000 $4000" → {"description":"Nuggets veganos","quantity":2,"unitPrice":2000,"total":4000}. If ANY items exist, populate the array. Do NOT return an empty array if there are product lines.
-- invoiceNumber: look for Factura/Invoice/No./Nº/Folio/Ref labels.
-- vendorName: the business/company name, NOT the customer name, NOT an address. Usually appears at the top.
+- For HANDWRITTEN or MESSY receipts: be tolerant of OCR errors. If a number reads "1OO" treat as "100"; "$" near digits implies a price. Do your best to interpret approximate text.
+- invoiceNumber: look for Factura/Invoice/No./Nº/Número/Folio/Ref labels.
 - description: one-sentence summary of what was purchased, or null.
 - Return ONLY the JSON object, no markdown, no explanation.`;
 
@@ -90,6 +97,10 @@ Extraction rules:
         vendorName: typeof parsed.vendorName === "string" ? parsed.vendorName : null,
         vendorIdentifications: Array.isArray(parsed.vendorIdentifications)
           ? parsed.vendorIdentifications.filter((x: unknown) => typeof x === "string")
+          : [],
+        customerName: typeof parsed.customerName === "string" ? parsed.customerName : null,
+        customerIdentifications: Array.isArray(parsed.customerIdentifications)
+          ? parsed.customerIdentifications.filter((x: unknown) => typeof x === "string")
           : [],
         items: Array.isArray(parsed.items) ? parsed.items : [],
       };

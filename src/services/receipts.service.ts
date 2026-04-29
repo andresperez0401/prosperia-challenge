@@ -102,7 +102,18 @@ export async function processReceipt(
       (aiStruct as { vendorIdentifications?: string[] }).vendorIdentifications ??
       base.vendorIdentifications ??
       [],
-    items: ((aiStruct as { items?: unknown[] }).items ?? []) as object[],
+    customerName:
+      (aiStruct as { customerName?: string | null }).customerName ?? base.customerName ?? null,
+    customerIdentifications:
+      (aiStruct as { customerIdentifications?: string[] }).customerIdentifications ??
+      base.customerIdentifications ??
+      [],
+    ocrConfidence: typeof ocrOut.confidence === "number" ? +ocrOut.confidence.toFixed(2) : null,
+    items: (
+      ((aiStruct as { items?: unknown[] }).items?.length
+        ? (aiStruct as { items?: unknown[] }).items
+        : (base as { items?: unknown[] }).items) ?? []
+    ) as object[],
     rawText: ocrOut.text,
   };
 

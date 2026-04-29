@@ -34,6 +34,10 @@ const KEYWORD_MAP: [string, string][] = [
   // Papelería
   ["papelería", "Papelería"], ["papeler", "Papelería"], ["tinta", "Papelería"],
   ["impresora", "Papelería"], ["lapiz", "Papelería"], ["bolígraf", "Papelería"],
+  ["papel", "Papelería"], ["cartuch", "Papelería"], ["resma", "Papelería"],
+  ["cartucho", "Papelería"], ["cinta adhesiva", "Papelería"], ["adhesiva", "Papelería"],
+  ["oficina", "Papelería"], ["folder", "Papelería"], ["archivador", "Papelería"],
+  ["pluma", "Papelería"], ["marcador", "Papelería"], ["cuaderno", "Papelería"],
   // Software / Suscripciones
   ["suscrip", "Software/Suscripciones"], ["software", "Software/Suscripciones"],
   ["netflix", "Software/Suscripciones"], ["spotify", "Software/Suscripciones"],
