@@ -77,8 +77,8 @@ export class TesseractOcr implements OcrProvider {
             textLength: result.text.length,
           });
 
-          // Early exit across variants: first decent result wins.
-          if (score >= 80 && result.confidence >= 0.75) break;
+          // Early exit: good enough result → skip remaining variants
+          if (score >= 60 && result.confidence >= 0.65) break;
         } catch (err) {
           logger.warn({
             msg: "OCR: variant failed",
@@ -111,9 +111,9 @@ export class TesseractOcr implements OcrProvider {
     }
   }
 
-  /** Try PSM 4 (single column), PSM 6 (block), PSM 11 (sparse). Stop early if good. */
+  /** Try PSM 6 (block) first — best for structured invoices. Fallback to PSM 4 (column) only if needed. */
   private async runBestOfModes(filePath: string): Promise<{ result: OcrResult; psm: number }> {
-    const psms = [Tesseract.PSM.SINGLE_COLUMN, Tesseract.PSM.SINGLE_BLOCK, Tesseract.PSM.SPARSE_TEXT];
+    const psms = [Tesseract.PSM.SINGLE_BLOCK, Tesseract.PSM.SINGLE_COLUMN];
     const candidates: { result: OcrResult; psm: number; score: number }[] = [];
 
     for (const psm of psms) {
@@ -122,7 +122,8 @@ export class TesseractOcr implements OcrProvider {
         const result = await runTesseract(filePath, psm);
         const score = compositeScore(result);
         candidates.push({ result, psm: psmNum, score });
-        if (score >= 50 && result.confidence >= 0.7) {
+        // Good enough on first try → skip second PSM
+        if (score >= 40 && result.confidence >= 0.60) {
           return { result, psm: psmNum };
         }
       } catch (err) {

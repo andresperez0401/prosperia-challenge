@@ -32,6 +32,8 @@ export class FallbackAiProvider implements AiProvider {
     reconstructedText?: string;
     partialFields?: Partial<ParsedReceipt>;
     warnings?: string[];
+    totalCandidates?: { label: string; value: number }[];
+    labeledFields?: Record<string, string>;
   }): Promise<Partial<ParsedReceipt>> {
     for (let i = 0; i < this.providers.length; i++) {
       try {

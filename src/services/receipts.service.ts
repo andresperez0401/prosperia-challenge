@@ -2,6 +2,7 @@ import { prisma } from "../db/client.js";
 import { getOcrProvider } from "./ocr/index.js";
 import { getAiProvider } from "./ai/index.js";
 import { parseReceipt } from "./parsing/parseReceipt.js";
+import { extractAllTotalCandidates, extractRawLabeledFields } from "./parsing/parser.js";
 import { categorize } from "./parsing/categorizer.js";
 import { detectCurrency } from "./parsing/detect.currency.js";
 import { pdfToImages } from "./pdf/pdfHandler.js";
@@ -103,30 +104,59 @@ export async function processReceipt(
   const parsedResult = parseReceipt(parseCtx);
   const base = parsedResult.fields;
 
-  // 5. AI Fallback (structure)
-  // Only ask AI to fill in what's missing or fix what's broken
-  const aiStruct = await ai.structure({
-    rawText,
-    reconstructedText,
-    partialFields: base,
-    warnings: parsedResult.warnings,
-  }).catch((err) => {
-    logger.error("AI Structure failed", err);
-    return {} as Partial<ParsedReceipt>;
-  });
+  // 5. AI calls — structure + categorize run in parallel for speed.
+  // categorize uses rules-only data (no need to wait for structure).
+  const totalCandidates = extractAllTotalCandidates(reconstructedText || rawText);
+  const labeledFields = extractRawLabeledFields(reconstructedText || rawText);
 
-  // Merge AI fields into base fields (prefer AI if base is empty)
+  const [aiStruct, aiCatResult] = await Promise.all([
+    ai.structure({
+      rawText,
+      reconstructedText,
+      partialFields: base,
+      warnings: parsedResult.warnings,
+      totalCandidates,
+      labeledFields,
+    }).catch((err) => {
+      logger.error("AI Structure failed", err);
+      return {} as Partial<ParsedReceipt>;
+    }),
+    ai.categorize({
+      rawText,
+      items: base.items ?? [],
+      vendorName: base.vendorName ?? null,
+    }).catch(() => ({} as Partial<ParsedReceipt>)),
+  ]);
+
+  // Financial fields: AI always wins — sees all total candidates and full context.
+  // Identity fields: AI fills missing OR corrects obviously wrong values (terminal codes, doc titles).
+  // Everything else: AI fills only what rules left empty.
+  const FINANCIAL = new Set<keyof ParsedReceipt>(["amount", "subtotalAmount", "taxAmount", "taxPercentage"]);
+
   const mergedFields: Partial<ParsedReceipt> = { ...base };
 
   const isEmpty = (val: unknown) =>
-    val === null || val === undefined || (Array.isArray(val) && val.length === 0) || (typeof val === "string" && val.trim().length === 0);
+    val === null || val === undefined ||
+    (Array.isArray(val) && val.length === 0) ||
+    (typeof val === "string" && val.trim().length === 0);
+
+  // A rule-extracted vendor looks "bad" if it's a terminal code or doc title the AI should fix
+  const BAD_VENDOR = /^(DC\d+|POS[\-\s]?\d*|TERM[\-\s]?\d+|CAJA\s*\d+|REG\s*\d+|TML\s*\d+|[A-Z]{1,3}\d{1,4}|Comprobante|Factura de Operaci[oó]n|DGI)$/i;
 
   for (const key of Object.keys(aiStruct) as (keyof ParsedReceipt)[]) {
     const aiVal = aiStruct[key];
     if (aiVal === null || aiVal === undefined) continue;
-
     const baseVal = base[key];
-    const shouldOverride = isEmpty(baseVal) || key === "extraFields";
+
+    let shouldOverride = isEmpty(baseVal) || key === "extraFields" || FINANCIAL.has(key);
+
+    // Identity: AI corrects only if rules returned nothing or an obviously bad value
+    if (!shouldOverride && (key === "vendorName" || key === "customerName")) {
+      shouldOverride = typeof baseVal === "string" && BAD_VENDOR.test(baseVal.trim());
+    }
+    if (!shouldOverride && (key === "vendorIdentifications" || key === "customerIdentifications")) {
+      shouldOverride = Array.isArray(baseVal) && baseVal.length === 0;
+    }
 
     if (shouldOverride) {
       // @ts-ignore
@@ -141,18 +171,8 @@ export async function processReceipt(
   if (computed.taxAmount != null && mergedFields.taxAmount == null) mergedFields.taxAmount = computed.taxAmount;
   if (computed.taxPercentage != null && mergedFields.taxPercentage == null) mergedFields.taxPercentage = computed.taxPercentage;
 
-  // 6. Categorization
-  let categoryId: number | null = null;
-  try {
-    const aiCat = await ai.categorize({
-      rawText,
-      items: mergedFields.items ?? [],
-      vendorName: mergedFields.vendorName ?? null,
-    });
-    categoryId = aiCat.category ?? null;
-  } catch {
-    // silently fall through to heuristic
-  }
+  // 6. Categorization — already resolved in parallel above
+  let categoryId: number | null = aiCatResult.category ?? null;
 
   if (categoryId === null) {
     categoryId = await categorize(rawText, {

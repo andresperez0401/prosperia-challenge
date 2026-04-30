@@ -2,15 +2,20 @@ import { ParsedReceipt } from "../../types/receipt.js";
 import { ParserContext, ParserResult } from "./parsers/parserInterface.js";
 import { GenericReceiptParser } from "./parsers/genericReceiptParser.js";
 import { SeniatVenezuelaParser } from "./parsers/seniatVenezuelaParser.js";
+import { PanamaDgiParser } from "./parsers/panamaDgiParser.js";
 import { logger } from "../../config/logger.js";
 
 const generic = new GenericReceiptParser();
 const seniat = new SeniatVenezuelaParser();
+const panamaDgi = new PanamaDgiParser();
+
+/** Specialized parsers checked in order — first with score > 0.5 wins overlay */
+const SPECIALIZED = [panamaDgi, seniat];
 
 /**
  * Parse a receipt:
  *   1. Always run the generic parser to get base fields.
- *   2. If SENIAT/Venezuela markers are detected, overlay specialized fields on top.
+ *   2. Check specialized parsers; highest-confidence one overlays its fields.
  */
 export function parseReceipt(ctx: ParserContext): ParserResult {
   logger.info({ msg: "parseReceipt: start", mimeType: ctx.mimeType, textLength: ctx.rawText.length });
@@ -20,8 +25,16 @@ export function parseReceipt(ctx: ParserContext): ParserResult {
   const warnings = [...baseResult.warnings];
   let parserName = baseResult.parserName;
 
-  if (seniat.detect(ctx) > 0.5) {
-    const sp = seniat.parse(ctx);
+  // Pick the highest-confidence specialized parser (if any)
+  let bestScore = 0;
+  let bestParser = null as typeof SPECIALIZED[0] | null;
+  for (const sp of SPECIALIZED) {
+    const score = sp.detect(ctx);
+    if (score > bestScore) { bestScore = score; bestParser = sp; }
+  }
+
+  if (bestParser && bestScore > 0.5) {
+    const sp = bestParser.parse(ctx);
     parserName += ` + ${sp.parserName}`;
     warnings.push(...sp.warnings);
     for (const key of Object.keys(sp.fields) as (keyof ParsedReceipt)[]) {

@@ -7,6 +7,8 @@ export class MockAi implements AiProvider {
     reconstructedText?: string;
     partialFields?: Partial<ParsedReceipt>;
     warnings?: string[];
+    totalCandidates?: { label: string; value: number }[];
+    labeledFields?: Record<string, string>;
   }) {
     const rawText = input.reconstructedText || input.rawText;
     const totalMatch = rawText.match(/total\D*(\d+[\.,]\d{2})/i);

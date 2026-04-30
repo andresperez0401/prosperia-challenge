@@ -80,28 +80,18 @@ export async function preprocessImage(
       .toFile(normalizedPath);
     results.push({ imagePath: normalizedPath, mimeType: "image/png", variant: "normalized" });
 
-    // Variant 2: threshold-160 — binarization for low-contrast/light text receipts.
-    // 160 (vs 180) captures more borderline-gray text without adding noise on clean scans.
+    // Variant 2: threshold — binarization for low-contrast / thermal receipts.
+    // Use higher threshold for dark images (already inverted), lower for normal.
+    const threshValue = shouldInvert ? 140 : 160;
     const thresholdPath = path.join(dir, `${base}-ocr-threshold.png`);
     await basePipe()
       .normalize()
       .median(1)
-      .threshold(160)
-      .png({ compressionLevel: 6 })
-      .toFile(thresholdPath);
-    results.push({ imagePath: thresholdPath, mimeType: "image/png", variant: "threshold-160" });
-
-    // Variant 3: darkened — strong contrast + higher threshold for faint/thin text
-    // (WhatsApp photos, thermal receipts, pale ink on light backgrounds).
-    const darkenedPath = path.join(dir, `${base}-ocr-darkened.png`);
-    await basePipe()
-      .normalize()
-      .sharpen({ sigma: 2.5 })
-      .threshold(190)
+      .threshold(threshValue)
       .resize({ width: targetWidth, withoutEnlargement: false })
       .png({ compressionLevel: 6 })
-      .toFile(darkenedPath);
-    results.push({ imagePath: darkenedPath, mimeType: "image/png", variant: "darkened" });
+      .toFile(thresholdPath);
+    results.push({ imagePath: thresholdPath, mimeType: "image/png", variant: `threshold-${threshValue}` });
 
   } catch (err) {
     logger.error({
