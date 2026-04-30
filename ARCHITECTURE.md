@@ -61,7 +61,7 @@ Si el PDF tiene múltiples páginas, procesa cada una y junta el texto con un sa
 
 #### Las 3 Versiones
 
-Imagina tienes una foto de una factura. Sharp hace:
+Teniendo una foto de una factura. Sharp hace:
 
 **Versión 1: `normalized` — Versión "normal, limpia"**
 ```
@@ -166,6 +166,8 @@ Tesseract devuelve la posición de cada palabra en la imagen. Esta etapa:
 2. Detecta columnas (espacios grandes entre palabras)
 3. Extrae pares clave-valor (ej: "TOTAL: 15.212,97")
 4. Si hay tabla de items, los extrae ordenados por fila
+
+Lo hace el reconstructLaayout, agrupando palabras por prioridad vertical, ordenando de izquierd a derecha y detectando alineaciones horizontales. Basicamente toma la data matemática (coordenadas) que da Tesseract y reconstruye el documento como si fuera una tabla estructurada.
 
 Resultado: Texto que respeta la estructura visual de la factura original, no un bloque confuso.
 
@@ -326,45 +328,13 @@ GenericParser hace esto:
 - Si ve "RIF" en el texto → 85% confianza
 - Si ve "Bs" o "VES" en el texto → 70% confianza
 
+Se aplico esta variante debido a que alguna de las facturas de prueba encontradas estaban relacionadas con Venezuela. Pero la idea es que se puedan implementar mas adaptadores a la interfaz: ReceiptParser
+
 Si alguna de estas es cierta → ejecuta SeniatVenezuelaParser
 
 **Qué hace el SeniatVenezuelaParser:**
 
 Lee lo que GenericParser encontró y lo corrige/agrega para facturas venezolanas.
-
-**Regla 1: Fuerza currency a VES**
-```
-GenericParser encontró: currency: null
-SeniatParser dice: "Vi 'RIF' y 'Bs', esto es VENEZUELA"
-                   "currency debe ser 'VES' (bolívares)"
-Resultado: currency: "VES"
-```
-
-**Regla 2: Busca vendor INTELIGENTE**
-```
-GenericParser buscó: primeras 8 líneas
-SeniatParser busca: cerca del RIF (misma línea o anterior)
-                    "El nombre está junto al RIF"
-
-Ejemplo:
-Línea 3: "BALÚ"
-Línea 4: "RIF: J-40208563-5"
-→ Encuentra vendor = "BALÚ" (cercano al RIF)
-```
-
-**Regla 3: NUNCA retorna SENIAT como vendor**
-```
-Si GenericParser encontró vendor = "SENIAT"
-SeniatParser dice: "No. SENIAT es el organismo fiscal, no la tienda"
-                   "Busco el VERDADERO vendor en otra línea"
-```
-
-**Regla 4: Normaliza RIF al formato estándar**
-```
-GenericParser encontró: "J 40208563 5"
-SeniatParser normaliza: "J-40208563-5"
-(Quita espacios, agrega guiones en posiciones correctas)
-```
 
 **Ejemplo completo de flow:**
 
@@ -453,12 +423,11 @@ Tolerancia: Permite diferencia de hasta 6 centavos (errores de redondeo).
 - Asigna a una categoría contable de la base de datos
 - Si falla, busca por keywords (ej: "uber" → Transporte, "restauran" → Alimentación)
 
-Usa OpenAI `gpt-4o-mini` o DeepSeek (configurable). Si ambas fallan, usa heurística local (gratuita pero menos precisa).
+Usa OpenAI `gpt-4o-mini` o DeepSeek como fallback. Si ambas fallan, usa heurística local pero es menos precisa.
 
 ### 9️⃣ Guardar en Base de Datos
 
 Se almacena:
-- Archivo original + contenido texto plano
 - Todos los campos extraídos (monto, fecha, vendor, items, etc.)
 - ID de categoría contable
 - Metadatos del procesamiento (qué provider se usó, qué método OCR, etc.)
@@ -472,18 +441,6 @@ DEEPSEEK_API_KEY=sk-...          # Solo si usas deepseek
 OPENAI_BASE_URL=https://prosperia-openai-relay-production.up.railway.app
 PROSPERIA_TOKEN=tu-nombre        # Token personal
 ```
-
-**Verificar que funciona:**
-```bash
-curl -X POST https://prosperia-openai-relay-production.up.railway.app/openai/chat \
-  -H "X-Prosperia-Token: TU_TOKEN" \
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
-```
-
-**Si falla con 404:**
-- Token inválido o vacío
-- Relay no disponible
-- URL incorrecta
 
 Recomendado: `AI_PROVIDER=auto` (intenta OpenAI, luego DeepSeek, fallback a reglas locales)
 
@@ -509,47 +466,5 @@ samples/                  → PDFs de prueba
 uploads/                  → Archivos subidos
 ```
 
-## Tipos Principales
 
-**ParsedReceipt** — Datos extraídos de una factura:
-- Montos: `amount`, `subtotalAmount`, `taxAmount`, `taxPercentage`
-- Identificación: `vendorName`, `invoiceNumber`, `date`, `vendorIdentifications`
-- Contabilidad: `category`, `categoryName`
-- Items: lista de compras (descripción, cantidad, precio)
-- Moneda: `currency` (VES, USD, EUR, COP)
-- Método pago: `paymentMethod` (CARD, CASH, TRANSFER)
 
-**OcrResult** — Salida del OCR:
-- Texto extraído + confianza (0-1)
-- Posición de cada línea y palabra
-- Variante usada (normalized, threshold-160, darkened)
-- Modo PSM (4, 6, o 11)
-
-## Solucionar Problemas {#problemas}
-
-**Monto sale `null` pero está en el texto:**
-- Verificar que el texto contenga "TOTAL:" o similar
-- Si está sin etiqueta ("15.212,97" solo), la IA lo encontrará
-- Si falla: revisar token del relay
-
-**Vendor dice "SENIAT" o está mal:**
-- El parser salta automáticamente SENIAT, FECHA, RIF
-- Para facturas venezolanas, busca vendor en primeras líneas
-- Si persiste: agregar regla en `parser.ts`
-
-**Número de factura sale como "FECHA":**
-- Edge case del OCR. La IA lo corrige automáticamente
-
-**Error 404 en categorización:**
-- Token vacío o inválido en `.env`
-- Relay no disponible o URL incorrecta
-- Sistema fallback por keywords automáticamente
-
-**OCR lee texto pero montos son raros:**
-- Revisar logs ("Naive Parse Result")
-- Verificar que el texto contenga TOTAL, SUBTOTAL, IVA
-- Formato "Bs 15.212,97" se maneja bien (sistema Venezuela)
-
-**PDF no se procesa:**
-- Texto embebido: OK sin software extra
-- Escaneado: Necesita Ghostscript en Windows (`choco install ghostscript graphicsmagick`)
