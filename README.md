@@ -1,103 +1,173 @@
-# Mini-Prosperia – Challenge (OCR + IA)
+# Mini-Prosperia — OCR + IA para Facturas
 
-**Objetivo:** a partir de un recibo (PDF o imagen) extraer y persistir **toda** esta información:
+Sube una factura (PDF o imagen) y el sistema extrae automáticamente los datos, los estructura y los clasifica contablemente.
 
-- **Total** (`amount`)
-- **Subtotal** (`subtotalAmount`)
-- **Impuesto** (`taxAmount`)
-- **% de impuesto** (`taxPercentage`)
-- **Vendor name**
-- **Vendor identifications** (RUC/NIT/CIF u otros)
-- **Categorizar automáticamente** el gasto a una **cuenta contable** (`Account`)
-
-**Bonus:** una **UI** simple para subir la imagen/PDF y ver la transacción desglosada (hay un form base en `/public/index.html`).
+**Qué hace:**
+- Lee texto con OCR (Tesseract)
+- Extrae campos: monto, subtotal, IVA, vendor, fecha, número de factura
+- Clasifica el gasto en una cuenta contable usando IA (OpenAI o DeepSeek)
+- Guarda todo en PostgreSQL
 
 ---
 
-## 🔧 Lo que debes implementar (claves marcadas con `TODO` en el código)
+## Requisitos
 
-1) **OCR con Tesseract (obligatorio)**
-   - Implementa el provider de Tesseract en `src/services/ocr/*` para extraer `rawText` desde una imagen/PDF.
-   - Sugerencia: idioma `eng+spa`.
-
-2) **Estructuración y/o parsing de campos**
-   - Detecta y llena: `amount`, `subtotalAmount`, `taxAmount`, `taxPercentage`, `date`, `invoiceNumber`, `vendorName`, `vendorIdentifications` (RUC/NIT/CIF).
-   - Puedes combinar **reglas** + **IA** para mejorar exactitud.
-
-3) **Categorización con OpenAI usando el Relay (obligatorio para la categoría)**
-   - Llama al **relay** (endpoint HTTP) para obtener la **categoría contable** recomendada a partir del texto del recibo y/o vendor.
-   - Integra el resultado asignando un `accountId` existente (usa las cuentas del seed).
-
-> En el repo hay heurísticas base y stubs de IA. Los puntos exactos a tocar están marcados con `// TODO:` en módulos de **OCR**, **AI** y **parsing/categorization**.
+- Node.js 20+
+- PostgreSQL (o usar Neon.tech)
+- Docker Desktop (opcional)
 
 ---
 
-## 🚀 Setup rápido
+## Levantar en local
+
+### 1. Instalar dependencias
+
+```bash
+npm install
+```
+
+### 2. Variables de entorno
 
 ```bash
 cp .env.example .env
-npm i
-npm run compose:up           # o usa Postgres local si no tienes Docker
-npm run db:generate
-npm run db:migrate
+```
+
+Editar `.env`:
+
+```env
+NODE_ENV=development
+DATABASE_URL=postgresql://usuario:password@host/db?sslmode=require
+
+# IA — elegir uno:
+AI_PROVIDER=auto          # Recomendado: prueba OpenAI → DeepSeek → reglas locales
+
+# OpenAI vía relay Prosperia
+OPENAI_BASE_URL=https://prosperia-openai-relay-production.up.railway.app
+PROSPERIA_TOKEN=tu-nombre-apellido
+
+# DeepSeek (alternativa barata)
+DEEPSEEK_API_KEY=sk-xxxxx
+```
+
+### 3. Migraciones y seed
+
+```bash
+# Crear tablas en la DB
+npm run db:deploy
+
+# Insertar cuentas contables iniciales
 npm run db:seed
+```
+
+### 4. Correr
+
+```bash
 npm run dev
 ```
 
-- API: `http://localhost:3000`
-- UI:  `http://localhost:3000/` (form para subir)
-
-### Endpoints
-- `POST /api/receipts` (form-data con `file`)
-- `GET /api/receipts/:id`
-- `POST /api/receipts/:id/reparse`
-- `POST /api/transactions` (ejemplo de CRUD base)
+App en: `http://localhost:3000`
 
 ---
 
-## 🧠 Proveedores
+## Levantar con Docker
 
-- **OCR**: `tesseract` (**obligatorio implementarlo**). También existe `mock` para pruebas.
-- **IA**:
-  - `mock` (gratis) — funciona sin costos.
-  - **OpenAI vía Relay** (recomendado para categorización):
-    - No necesitas una API key propia.
-    - Usa el **relay** provisto y tu **token** para las llamadas.
+```bash
+cp .env.example .env
+# Editar .env con DATABASE_URL y demás variables
 
-### Configuración para usar el Relay (OpenAI)
-
-En tu `.env` del challenge define:
-
-```
-AI_PROVIDER=openai
-OPENAI_BASE_URL=https://prosperia-openai-relay-production.up.railway.app
-PROSPERIA_TOKEN=nombre-apellido
+docker compose up --build
 ```
 
-- `PROSPERIA_TOKEN` será tu **token de acceso** al relay y **es tu nombre-apellido** (por ejemplo: `andres-prato`).
-- El cliente del challenge enviará las requests a:
-  - `POST ${OPENAI_BASE_URL}/openai/chat`
-  - Header requerido: `X-Prosperia-Token: ${PROSPERIA_TOKEN}`
-- **Importante:** La API key real de OpenAI vive en el relay (servidor).
-- Utiliza el Relay para poder usar gpt-4o-mini a tu disposición para el challenge
+App en: `http://localhost:3000`
+
+> Las migraciones y seed corren automáticamente al iniciar el contenedor.
 
 ---
 
-## ✅ Criterios de evaluación
+## Endpoints
 
-1. **Exactitud** de los campos extraídos: `amount`, `subtotalAmount`, `taxAmount`, `taxPercentage`, `vendorName`, `vendorIdentifications`.
-2. **Categorización automática**: correcto mapeo a un `Account` existente (vía relay + OpenAI).
-3. **Calidad del código** (TypeScript), manejo de errores y DX (logs, validaciones, mensajes).
-4. **Persistencia**: Prisma + migraciones + seeds funcionando.
-5. **Bonus**: UI funcional, tests, Docker (opcional).
+| Método | URL | Descripción |
+|--------|-----|-------------|
+| `POST` | `/api/receipts` | Sube factura (form-data: `file`) |
+| `GET` | `/api/receipts` | Lista todas las facturas |
+| `GET` | `/api/receipts/:id` | Ver factura por ID |
+| `POST` | `/api/receipts/:id/reparse` | Re-procesar factura |
+
+### Ejemplo subir factura
+
+```bash
+curl -F "file=@factura.pdf" http://localhost:3000/api/receipts
+```
+
+Respuesta:
+```json
+{
+  "id": 1,
+  "vendorName": "BALÚ",
+  "amount": 15212.97,
+  "taxAmount": 2098.34,
+  "taxPercentage": 16,
+  "currency": "VES",
+  "category": 3,
+  "categoryName": "Ropa/Vestimenta",
+  "date": "2025-11-04"
+}
+```
 
 ---
 
-## 🧪 Cómo probaremos (resumen)
+## Proveedores de IA
 
-- Subiremos varias imágenes/PDF a `POST /api/receipts`.
-- Veremos el JSON persistido y los campos detectados.
-- Verificaremos que se asigna una **categoría contable** válida.
-- (Si hay UI) Subiremos un archivo desde `/` y validaremos el desglose.
+| `AI_PROVIDER` | Descripción | Costo |
+|---------------|-------------|-------|
+| `auto` | OpenAI → DeepSeek → Mock (nunca falla) | Mínimo |
+| `openai` | ChatGPT vía relay Prosperia | Pagado por Prosperia |
+| `deepseek` | DeepSeek API | ~$0.0001/factura |
+| `mock` | Solo reglas locales | Gratis |
 
-----
+---
+
+## Scripts
+
+```bash
+npm run dev          # Servidor con hot-reload
+npm run build        # Compilar TypeScript
+npm run start        # Correr compilado
+npm run db:deploy    # Aplicar migraciones
+npm run db:seed      # Insertar datos iniciales
+npm run db:migrate   # Crear nueva migración (dev)
+npm test             # Correr tests
+```
+
+---
+
+## Deploy en Railway
+
+```bash
+npm install -g @railway/cli
+railway login
+railway init
+railway variables set DATABASE_URL="..."
+railway variables set AI_PROVIDER=auto
+railway variables set PROSPERIA_TOKEN=tu-nombre
+railway up
+```
+
+Railway usa el `Dockerfile` automáticamente.
+
+---
+
+## Estructura
+
+```
+src/
+  services/
+    pdf/        → extrae texto/imagen de PDF
+    image/      → mejora imagen con Sharp
+    ocr/        → OCR con Tesseract
+    parsing/    → extrae campos con regex + IA
+    ai/         → OpenAI, DeepSeek, fallback
+  controllers/  → endpoints HTTP
+prisma/         → schema + migraciones + seed
+public/         → UI (HTML + CSS + JS)
+```
