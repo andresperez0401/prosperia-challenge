@@ -2,6 +2,11 @@
 
 Sube una factura (PDF o imagen) y el sistema extrae automáticamente los datos, los estructura y los clasifica contablemente.
 
+## URL de la app
+
+https://prosperia-challenge-production.up.railway.app/
+
+
 **Qué hace:**
 - Lee texto con OCR (Tesseract)
 - Extrae campos: monto, subtotal, IVA, vendor, fecha, número de factura
@@ -138,24 +143,6 @@ npm run db:seed      # Insertar datos iniciales
 npm run db:migrate   # Crear nueva migración (dev)
 npm test             # Correr tests
 ```
-
----
-
-## Deploy en Railway
-
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway variables set DATABASE_URL="..."
-railway variables set AI_PROVIDER=auto
-railway variables set PROSPERIA_TOKEN=tu-nombre
-railway up
-```
-
-Railway usa el `Dockerfile` automáticamente.
-
----
 
 ## Estructura
 
