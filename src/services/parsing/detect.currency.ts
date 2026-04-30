@@ -1,5 +1,7 @@
 export function detectCurrency(text: string, aiCur?: string | null) {
     if (!text) return aiCur ?? "USD";
+    // VES first — "Bs"/"Bs." prefix is unambiguous for Venezuelan bolívar
+    if (/\bBs\.?\s*[\d,.]|\bBs\b|\bVES\b/i.test(text)) return "VES";
     if (/€/.test(text)) return "EUR";
     if (/\bEUR\b/.test(text)) return "EUR";
     if (/£/.test(text)) return "GBP";

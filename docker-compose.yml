@@ -1,15 +1,18 @@
 services:
-  db:
-    image: postgres:16-alpine
+  app:
+    build: .
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: mini_prosperia
     ports:
-      - "5432:5432"
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      AI_PROVIDER: ${AI_PROVIDER:-auto}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://prosperia-openai-relay-production.up.railway.app}
+      PROSPERIA_TOKEN: ${PROSPERIA_TOKEN:-}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - uploads:/app/uploads
 
 volumes:
-  pgdata:
+  uploads:

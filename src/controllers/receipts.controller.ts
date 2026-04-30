@@ -24,6 +24,16 @@ export async function createReceipt(req: Request, res: Response, next: NextFunct
   } catch (e) { next(e); }
 }
 
+export async function listReceipts(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const receipts = await prisma.receipt.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    res.json(receipts);
+  } catch (e) { next(e); }
+}
+
 export async function getReceipt(req: Request, res: Response, next: NextFunction) {
   try {
     const r = await prisma.receipt.findUnique({ where: { id: req.params.id } });

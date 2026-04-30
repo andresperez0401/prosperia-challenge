@@ -1,9 +1,15 @@
 import { prisma } from "../db/client.js";
 import { getOcrProvider } from "./ocr/index.js";
 import { getAiProvider } from "./ai/index.js";
-import { naiveParse } from "./parsing/parser.js";
+import { parseReceipt } from "./parsing/parseReceipt.js";
 import { categorize } from "./parsing/categorizer.js";
 import { detectCurrency } from "./parsing/detect.currency.js";
+import { pdfToImages } from "./pdf/pdfHandler.js";
+import { reconstructLayout } from "./ocr/reconstructLayout.js";
+import { computeFields } from "./parsing/computeFields.js";
+import { logger } from "../config/logger.js";
+import { ParsedReceipt } from "../types/receipt.js";
+import fs from "fs";
 
 export async function processReceipt(
   filePath: string,
@@ -12,50 +18,164 @@ export async function processReceipt(
   const ocr = getOcrProvider();
   const ai = getAiProvider();
 
-  // TODO: Implementar ocr.extractText con Tesseract
-  const ocrOut = await ocr.extractText({ filePath, mimeType: meta.mimeType });
+  let targetFilePath = filePath;
+  let ocrMimeType = meta.mimeType;
+  let directText: string | null = null;
+  let pdfOcrConfidence: number | null = null;
+  let pdfMethod = "direct";
 
-  // 1) Reglas rápidas: extraer campos con regex (rápido, determinístico)
-  const base = naiveParse(ocrOut.text);
+  // 1. PDF Handling
+  if (meta.mimeType === "application/pdf") {
+    logger.info({ msg: "PDF: processing", filePath });
+    const pdfResult = await pdfToImages(filePath);
 
-  // TODO: Implementar
-  // 2) IA estructura los campos faltantes o ambiguos
-  const aiStruct = await ai.structure(ocrOut.text).catch(() => ({} as Partial<typeof base>));
+    if (pdfResult.method === "direct" && pdfResult.directText) {
+      directText = pdfResult.directText;
+      pdfMethod = "direct";
+      logger.info({ msg: "PDF: using embedded text", textLength: directText.length });
+    } else if (pdfResult.pages.length === 1) {
+      // Single page: let the normal OCR flow handle it
+      targetFilePath = pdfResult.pages[0];
+      ocrMimeType = "image/png";
+      pdfMethod = "ocr";
+      logger.info({ msg: "PDF: single page, using OCR", page: targetFilePath });
+    } else if (pdfResult.pages.length > 1) {
+      // Multi-page: run OCR on each page and combine the text
+      pdfMethod = "ocr";
+      logger.info({ msg: "PDF: multi-page OCR", pageCount: pdfResult.pages.length });
+      const pageTexts: string[] = [];
+      let totalConf = 0;
+      for (let i = 0; i < pdfResult.pages.length; i++) {
+        const pagePath = pdfResult.pages[i];
+        try {
+          const po = await ocr.extractText({ filePath: pagePath, mimeType: "image/png" });
+          if (po.text.trim()) {
+            pageTexts.push(po.text.trim());
+            totalConf += po.confidence;
+          }
+          logger.info({ msg: `PDF: page ${i + 1} OCR`, textLength: po.text.length, confidence: po.confidence });
+        } catch (err) {
+          logger.warn({ msg: `PDF: page ${i + 1} OCR failed`, error: err instanceof Error ? err.message : err });
+        }
+      }
+      if (pageTexts.length > 0) {
+        directText = pageTexts.join("\n\n");
+        pdfOcrConfidence = totalConf / pageTexts.length;
+        logger.info({ msg: "PDF: combined pages", pages: pageTexts.length, textLength: directText.length });
+      } else {
+        // All pages failed — fall back to first page
+        targetFilePath = pdfResult.pages[0];
+        ocrMimeType = "image/png";
+      }
+    }
+  }
 
-  // TODO: Implementar
-  // 3) Categorización: IA relay es la fuente primaria (obligatorio según README).
-  //    Si la IA falla, usamos la heurística de palabras clave como respaldo.
+  // 2. OCR Extraction
+  let rawText = directText || "";
+  let ocrConfidence = 1.0;
+  let ocrOut: any = { text: rawText, confidence: 1.0, words: [], lines: [] };
+
+  if (!directText) {
+    ocrOut = await ocr.extractText({ filePath: targetFilePath, mimeType: ocrMimeType });
+    rawText = ocrOut.text;
+    ocrConfidence = ocrOut.confidence || 0.5;
+  } else if (pdfOcrConfidence !== null) {
+    // directText came from multi-page PDF OCR — use its averaged confidence
+    ocrConfidence = pdfOcrConfidence;
+  }
+
+  // 3. Reconstruct Layout
+  const reconstructedLayout = directText
+    ? { text: directText, lines: directText.split("\n"), tableRows: [] }
+    : reconstructLayout(ocrOut.words || [], ocrOut.lines || [], rawText);
+  const reconstructedText = reconstructedLayout.text;
+
+  // 4. Run rules-based parsing pipeline
+  const parseCtx = {
+    rawText,
+    reconstructedText,
+    lines: reconstructedLayout.lines,
+    tableRows: reconstructedLayout.tableRows,
+    ocrConfidence,
+    mimeType: meta.mimeType,
+  };
+
+  const parsedResult = parseReceipt(parseCtx);
+  const base = parsedResult.fields;
+
+  // 5. AI Fallback (structure)
+  // Only ask AI to fill in what's missing or fix what's broken
+  const aiStruct = await ai.structure({
+    rawText,
+    reconstructedText,
+    partialFields: base,
+    warnings: parsedResult.warnings,
+  }).catch((err) => {
+    logger.error("AI Structure failed", err);
+    return {} as Partial<ParsedReceipt>;
+  });
+
+  // Merge AI fields into base fields (prefer AI if base is empty)
+  const mergedFields: Partial<ParsedReceipt> = { ...base };
+
+  const isEmpty = (val: unknown) =>
+    val === null || val === undefined || (Array.isArray(val) && val.length === 0) || (typeof val === "string" && val.trim().length === 0);
+
+  for (const key of Object.keys(aiStruct) as (keyof ParsedReceipt)[]) {
+    const aiVal = aiStruct[key];
+    if (aiVal === null || aiVal === undefined) continue;
+
+    const baseVal = base[key];
+    const shouldOverride = isEmpty(baseVal) || key === "extraFields";
+
+    if (shouldOverride) {
+      // @ts-ignore
+      mergedFields[key] = aiVal;
+    }
+  }
+
+  // 5b. Compute missing financial fields using math (subtotal + tax = total)
+  const computed = computeFields(mergedFields);
+  if (computed.amount != null && mergedFields.amount == null) mergedFields.amount = computed.amount;
+  if (computed.subtotalAmount != null && mergedFields.subtotalAmount == null) mergedFields.subtotalAmount = computed.subtotalAmount;
+  if (computed.taxAmount != null && mergedFields.taxAmount == null) mergedFields.taxAmount = computed.taxAmount;
+  if (computed.taxPercentage != null && mergedFields.taxPercentage == null) mergedFields.taxPercentage = computed.taxPercentage;
+
+  // 6. Categorization
   let categoryId: number | null = null;
   try {
     const aiCat = await ai.categorize({
-      rawText: ocrOut.text,
-      items: (aiStruct as { items?: [] }).items ?? [],
-      ...({ vendorName: (aiStruct as { vendorName?: string | null }).vendorName ?? base.vendorName } as object),
-    } as Parameters<typeof ai.categorize>[0]);
-    categoryId = (aiCat as { category?: number }).category ?? null;
+      rawText,
+      items: mergedFields.items ?? [],
+      vendorName: mergedFields.vendorName ?? null,
+    });
+    categoryId = aiCat.category ?? null;
   } catch {
     // silently fall through to heuristic
   }
+
   if (categoryId === null) {
-    categoryId = await categorize(ocrOut.text).catch(() => null);
+    categoryId = await categorize(rawText, {
+      vendorName: mergedFields.vendorName,
+      items: mergedFields.items,
+    }).catch(() => null);
   }
-  // Fallback final: README dice que categorización es obligatoria.
-  // Si todo falla, usar el primer account de tipo expense disponible.
+
   if (categoryId === null) {
     const fallback = await prisma.account.findFirst({
       where: { type: "expense" },
       orderBy: { id: "asc" },
     });
     if (fallback) {
-      console.warn("Category: using generic fallback →", fallback.name);
+      logger.warn("Category: using generic fallback → " + fallback.name);
       categoryId = fallback.id;
     }
   }
 
-  // detect currency — símbolo € es inequívoco; $ es ambiguo (MXN/COP/USD), se deja a la IA
-  const detectedCurrency = detectCurrency(ocrOut.text, (aiStruct as { currency?: string | null }).currency ?? null);
+  // Currency detection
+  const detectedCurrency = detectCurrency(rawText, mergedFields.currency ?? null);
 
-  // enrich category with account metadata if available
+  // Enrich category
   let categoryName: string | null = null;
   let categoryType: string | null = null;
   if (categoryId !== null) {
@@ -67,42 +187,32 @@ export async function processReceipt(
   }
 
   const json = {
-    amount: (aiStruct as { amount?: number | null }).amount ?? base.amount ?? null,
-    subtotalAmount:
-      (aiStruct as { subtotalAmount?: number | null }).subtotalAmount ?? base.subtotalAmount ?? null,
-    taxAmount: (aiStruct as { taxAmount?: number | null }).taxAmount ?? base.taxAmount ?? null,
-    taxPercentage:
-      (aiStruct as { taxPercentage?: number | null }).taxPercentage ?? base.taxPercentage ?? null,
-    type: (aiStruct as { type?: string }).type ?? "expense",
+    amount: mergedFields.amount ?? null,
+    subtotalAmount: mergedFields.subtotalAmount ?? null,
+    taxAmount: mergedFields.taxAmount ?? null,
+    taxPercentage: mergedFields.taxPercentage ?? null,
+    type: mergedFields.type ?? "expense",
     currency: detectedCurrency,
-    date: (aiStruct as { date?: string | null }).date ?? base.date ?? null,
-    paymentMethod: (aiStruct as { paymentMethod?: string | null }).paymentMethod ?? base.paymentMethod ?? null,
-    description: (aiStruct as { description?: string | null }).description ?? null,
-    invoiceNumber:
-      (aiStruct as { invoiceNumber?: string | null }).invoiceNumber ?? base.invoiceNumber ?? null,
+    date: mergedFields.date ?? null,
+    paymentMethod: mergedFields.paymentMethod ?? null,
+    description: mergedFields.description ?? null,
+    invoiceNumber: mergedFields.invoiceNumber ?? null,
     category: categoryId,
     categoryName,
     categoryType,
     vendorId: null,
-    vendorName:
-      (aiStruct as { vendorName?: string | null }).vendorName ?? base.vendorName ?? null,
-    vendorIdentifications:
-      (aiStruct as { vendorIdentifications?: string[] }).vendorIdentifications ??
-      base.vendorIdentifications ??
-      [],
-    customerName:
-      (aiStruct as { customerName?: string | null }).customerName ?? base.customerName ?? null,
-    customerIdentifications:
-      (aiStruct as { customerIdentifications?: string[] }).customerIdentifications ??
-      base.customerIdentifications ??
-      [],
-    ocrConfidence: typeof ocrOut.confidence === "number" ? +ocrOut.confidence.toFixed(2) : null,
-    items: (
-      ((aiStruct as { items?: unknown[] }).items?.length
-        ? (aiStruct as { items?: unknown[] }).items
-        : (base as { items?: unknown[] }).items) ?? []
-    ) as object[],
-    rawText: ocrOut.text,
+    vendorName: mergedFields.vendorName ?? null,
+    vendorIdentifications: mergedFields.vendorIdentifications ?? [],
+    customerName: mergedFields.customerName ?? null,
+    customerIdentifications: mergedFields.customerIdentifications ?? [],
+    extraFields: mergedFields.extraFields ?? {},
+    ocrConfidence: typeof ocrConfidence === "number" ? +ocrConfidence.toFixed(2) : null,
+    items: mergedFields.items ?? [],
+    rawText,
+    pipeline: {
+      pdfMethod,
+      parserUsed: parsedResult.parserName,
+    }
   };
 
   const saved = await prisma.receipt.create({
@@ -111,7 +221,7 @@ export async function processReceipt(
       mimeType: meta.mimeType,
       size: meta.size,
       storagePath: filePath,
-      rawText: ocrOut.text,
+      rawText,
       json,
       ocrProvider: process.env.OCR_PROVIDER || "tesseract",
       aiProvider: process.env.AI_PROVIDER || "mock",

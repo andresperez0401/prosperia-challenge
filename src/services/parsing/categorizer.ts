@@ -52,8 +52,15 @@ const KEYWORD_MAP: [string, string][] = [
   ["pintura", "Mantenimiento"],
 ];
 
-export async function categorize(rawText: string): Promise<number | null> {
-  const text = rawText.toLowerCase();
+export async function categorize(
+  rawText: string,
+  opts?: { vendorName?: string | null; items?: { description: string }[] },
+): Promise<number | null> {
+  const parts = [rawText];
+  if (opts?.vendorName) parts.push(opts.vendorName);
+  if (opts?.items?.length) parts.push(opts.items.map((i) => i.description).join(" "));
+  const text = parts.join(" ").toLowerCase();
+
   for (const [kw, accountName] of KEYWORD_MAP) {
     if (text.includes(kw)) {
       const acc = await prisma.account.findFirst({ where: { name: accountName } });

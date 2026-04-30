@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="120" x2="904" y2="904" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2BA85F" />
+      <stop offset="1" stop-color="#1F8A4B" />
+    </linearGradient>
+    <linearGradient id="sheet" x1="280" y1="250" x2="744" y2="766" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF8" />
+      <stop offset="1" stop-color="#F3F0E7" />
+    </linearGradient>
+    <linearGradient id="stroke" x1="286" y1="250" x2="738" y2="754" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17211C" />
+      <stop offset="1" stop-color="#0E1814" />
+    </linearGradient>
+    <filter id="shadow" x="160" y="160" width="704" height="704" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#0E1814" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="192" fill="url(#bg)"/>
+  <g filter="url(#shadow)">
+    <path d="M306 240H654L734 320V748L686 710L638 748L590 710L542 748L494 710L446 748L398 710L350 748L306 710V240Z" fill="url(#sheet)" stroke="url(#stroke)" stroke-width="26" stroke-linejoin="round"/>
+    <path d="M654 240V320H734" fill="none" stroke="url(#stroke)" stroke-width="26" stroke-linejoin="round"/>
+    <rect x="352" y="340" width="232" height="24" rx="12" fill="#0E1814" opacity="0.34"/>
+    <rect x="352" y="410" width="288" height="24" rx="12" fill="#0E1814" opacity="0.2"/>
+    <rect x="352" y="608" width="180" height="24" rx="12" fill="#0E1814" opacity="0.36"/>
+    <rect x="352" y="678" width="276" height="24" rx="12" fill="#0E1814" opacity="0.2"/>
+    <rect x="220" y="502" width="584" height="34" rx="17" fill="#2BA85F"/>
+    <circle cx="220" cy="519" r="30" fill="#F7FFFA"/>
+    <circle cx="804" cy="519" r="30" fill="#F7FFFA"/>
+  </g>
+</svg>

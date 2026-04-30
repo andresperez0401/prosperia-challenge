@@ -3,480 +3,263 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mini‑Prosperia – Extractor de Recibos</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --brand: #5b54f5;
-      --brand-light: #ede9ff;
-      --brand-dark: #4640d4;
-      --green: #16a34a; --green-light: #dcfce7;
-      --amber: #d97706; --amber-light: #fef3c7;
-      --red: #dc2626;   --red-light: #fee2e2;
-      --gray-50: #f8fafc; --gray-100: #f1f5f9;
-      --gray-200: #e2e8f0; --gray-300: #cbd5e1;
-      --gray-400: #94a3b8; --gray-500: #64748b;
-      --gray-600: #475569; --gray-700: #334155;
-      --gray-900: #0f172a;
-      --r: 14px;
-      --shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-
-    body {
-      font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-      background: var(--gray-100); color: var(--gray-900);
-      min-height: 100vh; padding: 28px 16px 64px;
-    }
-    .wrap { max-width: 760px; margin: 0 auto; }
-
-    /* header */
-    .hdr { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
-    .hdr-logo { width:42px;height:42px; background:var(--brand); border-radius:10px;
-      display:flex;align-items:center;justify-content:center; font-size:1.3rem; flex-shrink:0; }
-    .hdr h1 { font-size:1.35rem; font-weight:700; }
-    .hdr p  { font-size:0.82rem; color:var(--gray-500); margin-top:2px; }
-
-    /* card */
-    .card { background:#fff; border-radius:var(--r); border:1px solid var(--gray-200);
-      box-shadow:var(--shadow); padding:22px; margin-bottom:14px; }
-
-    /* drop zone */
-    .dz { border:2px dashed var(--gray-300); border-radius:10px;
-      padding:28px 18px; text-align:center; cursor:pointer;
-      transition:border-color .15s, background .15s; }
-    .dz:hover,.dz.over { border-color:var(--brand); background:var(--brand-light); }
-    .dz input { display:none; }
-    .dz-icon  { font-size:1.8rem; margin-bottom:6px; }
-    .dz-text  { font-size:.88rem; color:var(--gray-600); }
-    .dz-text strong { color:var(--brand); cursor:pointer; }
-    .dz-hint  { font-size:.75rem; color:var(--gray-400); margin-top:3px; }
-    .dz-file  { margin-top:8px; font-size:.8rem; color:var(--gray-700); font-weight:500; }
-
-    /* button */
-    .btn { display:inline-flex; align-items:center; gap:6px;
-      padding:9px 20px; border-radius:8px; border:none;
-      font-size:.88rem; font-weight:600; cursor:pointer; transition:opacity .15s; }
-    .btn:disabled { opacity:.45; cursor:not-allowed; }
-    .btn-brand { background:var(--brand); color:#fff; }
-    .btn-brand:hover:not(:disabled) { background:var(--brand-dark); }
-    .actions { margin-top:14px; }
-
-    /* progress */
-    .prog { display:none; margin-top:12px; }
-    .prog.on { display:block; }
-    .prog-track { background:var(--gray-200); border-radius:99px; height:4px; overflow:hidden; }
-    .prog-fill  { height:100%; width:0%; background:linear-gradient(90deg,var(--brand),#a78bfa);
-      border-radius:99px; transition:width .4s ease; }
-    .prog-lbl { font-size:.74rem; color:var(--gray-500); margin-top:4px; }
-
-    /* results */
-    #res { display:none; }
-
-    /* section label */
-    .sec { font-size:.68rem; font-weight:700; text-transform:uppercase;
-      letter-spacing:.07em; color:var(--gray-400); margin-bottom:10px; }
-
-    /* vendor */
-    .vendor-row { display:flex; align-items:flex-start; gap:14px; }
-    .vendor-av  { width:46px; height:46px; flex-shrink:0; border-radius:10px;
-      background:var(--brand-light); display:flex; align-items:center;
-      justify-content:center; font-size:1.25rem; font-weight:700; color:var(--brand); }
-    .vendor-name { font-size:1.1rem; font-weight:700; }
-    .vendor-meta { font-size:.78rem; color:var(--gray-500); margin-top:3px; }
-    .tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
-
-    /* financial */
-    .fin { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
-    @media(max-width:480px){ .fin { grid-template-columns:1fr 1fr; } }
-    .fin-cell { background:var(--gray-50); border:1px solid var(--gray-200);
-      border-radius:9px; padding:12px; }
-    .fin-cell.main { background:var(--brand-light); border-color:#c4b5fd; }
-    .fin-lbl { font-size:.67rem; font-weight:700; text-transform:uppercase;
-      letter-spacing:.05em; color:var(--gray-400); margin-bottom:3px; }
-    .fin-val { font-size:1.2rem; font-weight:700; color:var(--gray-900); }
-    .fin-cell.main .fin-val { color:var(--brand); font-size:1.4rem; }
-    .fin-sub { font-size:.7rem; color:var(--gray-400); margin-top:2px; }
-
-    /* category */
-    .cat-row { display:flex; align-items:center; gap:14px; }
-    .cat-icon { width:44px;height:44px;flex-shrink:0; border-radius:10px;
-      display:flex;align-items:center;justify-content:center; font-size:1.3rem; }
-    .cat-icon.found { background:var(--green-light); }
-    .cat-icon.missing{ background:var(--gray-100); }
-    .cat-name { font-size:1rem; font-weight:700; }
-    .cat-name.missing { color:var(--gray-400); font-style:italic; }
-    .cat-sub  { font-size:.76rem; color:var(--gray-500); margin-top:2px; }
-
-    /* details grid */
-    .dg { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-    @media(max-width:480px){ .dg { grid-template-columns:1fr; } }
-    .dg-cell { background:var(--gray-50); border:1px solid var(--gray-200);
-      border-radius:8px; padding:9px 11px; }
-    .dg-lbl { font-size:.65rem; font-weight:700; text-transform:uppercase;
-      letter-spacing:.05em; color:var(--gray-400); margin-bottom:2px; }
-    .dg-val { font-size:.88rem; font-weight:600; color:var(--gray-700); word-break:break-all; }
-
-    /* items table */
-    .items-tbl { width:100%; border-collapse:collapse; font-size:.83rem; }
-    .items-tbl th { text-align:left; padding:6px 8px;
-      font-size:.65rem; font-weight:700; text-transform:uppercase;
-      letter-spacing:.05em; color:var(--gray-400);
-      border-bottom:1px solid var(--gray-200); }
-    .items-tbl th:last-child,.items-tbl td:last-child { text-align:right; }
-    .items-tbl td { padding:8px; color:var(--gray-700);
-      border-bottom:1px solid var(--gray-100); }
-    .items-tbl tr:last-child td { border-bottom:none; }
-
-    /* badges */
-    .badge { display:inline-block; padding:2px 8px; border-radius:99px;
-      font-size:.72rem; font-weight:600; }
-    .b-purple { background:var(--brand-light); color:var(--brand); }
-    .b-green  { background:var(--green-light);  color:var(--green); }
-    .b-amber  { background:var(--amber-light);  color:var(--amber); }
-    .b-gray   { background:var(--gray-100);     color:var(--gray-600); border:1px solid var(--gray-200); }
-
-    /* error */
-    .err { background:var(--red-light); border:1px solid #fca5a5;
-      border-radius:var(--r); padding:12px 14px;
-      color:var(--red); font-size:.86rem; display:none; margin-bottom:14px; }
-
-    /* meta footer */
-    .meta-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-    .pill { display:inline-flex; align-items:center; gap:4px;
-      background:var(--gray-100); border:1px solid var(--gray-200);
-      border-radius:99px; padding:2px 9px;
-      font-size:.72rem; font-weight:600; color:var(--gray-600); }
-    .receipt-id { font-size:.69rem; color:var(--gray-400); font-family:monospace; margin-top:5px; }
-
-    /* json */
-    details { margin-top:0; }
-    summary { cursor:pointer; font-size:.8rem; font-weight:600;
-      color:var(--gray-500); user-select:none; }
-    summary:hover { color:var(--gray-900); }
-    pre { margin-top:10px; background:var(--gray-900); color:#94a3b8;
-      padding:14px; border-radius:9px; overflow:auto;
-      font-size:.76rem; line-height:1.55; max-height:360px; }
-  </style>
+  <title>Mini Prosperia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <meta name="theme-color" content="#2ba85f" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-<div class="wrap">
 
-  <div class="hdr">
-    <div class="hdr-logo">🧾</div>
-    <div>
-      <h1>Mini‑Prosperia</h1>
-      <p>Extrae y categoriza recibos con OCR + IA</p>
+  <!-- ══ NAVBAR ══════════════════════════════════════ -->
+  <nav class="nav" id="navbar">
+    <div class="nav-inner">
+      <a class="nav-brand" href="#">
+        <img class="nav-lockup" src="/miniprosperia-lockup.svg" alt="Mini Prosperia" />
+      </a>
+      <div class="nav-links">
+        <a class="nav-link active" href="#upload" id="lnkUpload">Nuevo recibo</a>
+        <a class="nav-link" href="#historial" id="lnkHist">Historial</a>
+      </div>
     </div>
-  </div>
+  </nav>
 
-  <!-- Upload -->
-  <div class="card">
-    <form id="frm">
-      <div class="dz" id="dz">
-        <div class="dz-icon">📄</div>
-        <div class="dz-text">Arrastra aquí o <strong id="browse">selecciona un archivo</strong></div>
-        <div class="dz-hint">PNG · JPG · PDF</div>
-        <input type="file" id="fi" name="file" accept=".png,.jpg,.jpeg,.pdf" required />
-        <div class="dz-file" id="fc"></div>
-      </div>
-      <div class="actions">
-        <button type="submit" class="btn btn-brand" id="btn" disabled>Procesar recibo</button>
-      </div>
-      <div class="prog" id="prog">
-        <div class="prog-track"><div class="prog-fill" id="pf"></div></div>
-        <div class="prog-lbl" id="pl">Iniciando…</div>
-      </div>
-    </form>
-  </div>
-
-  <div class="err" id="err"></div>
-
-  <div id="res">
-    <!-- Vendor -->
-    <div class="card" id="cVendor" style="display:none">
-      <div class="sec">Empresa / Vendor</div>
-      <div class="vendor-row">
-        <div class="vendor-av" id="vAv"></div>
+  <!-- ══ SECCIÓN: NUEVO RECIBO ═══════════════════════ -->
+  <section id="upload">
+    <div class="section">
+      <div class="section-header">
         <div>
-          <div class="vendor-name" id="vName"></div>
-          <div class="vendor-meta" id="vMeta"></div>
-          <div class="tags" id="vIds"></div>
+          <div class="section-title">Nuevo recibo</div>
+          <div class="section-sub">Sube una imagen o PDF para extraer y categorizar automáticamente</div>
+        </div>
+      </div>
+
+      <div class="upload-grid">
+        <!-- Formulario -->
+        <div class="card">
+          <form id="frm">
+            <div class="dz" id="dz">
+              <div class="dz-icon">
+                <svg viewBox="0 0 24 24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 16V8m0 0-3 3m3-3 3 3M6 20h12a2 2 0 0 0 2-2V8a2 2 0 0 0-.59-1.41l-4-4A2 2 0 0 0 14 2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z"/>
+                </svg>
+              </div>
+              <div class="dz-text">Arrastra aquí o <strong id="browse">selecciona un archivo</strong></div>
+              <div class="dz-hint">PNG · JPG · PDF · hasta 10 MB</div>
+              <input type="file" id="fi" name="file" accept=".png,.jpg,.jpeg,.pdf" required />
+              <div class="dz-file" id="fc"></div>
+            </div>
+            <div class="actions">
+              <button type="submit" class="btn btn-brand" id="btn" disabled>
+                Procesar recibo
+              </button>
+            </div>
+            <div class="prog" id="prog">
+              <div class="prog-track"><div class="prog-fill" id="pf"></div></div>
+              <div class="prog-lbl" id="pl">Iniciando…</div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Tips -->
+        <div class="card" style="padding:20px">
+          <div class="sec" style="margin-bottom:14px">Qué se extrae</div>
+          <div class="tips">
+            <div class="tip">
+              <div class="tip-dot"></div>
+              <div>
+                <div class="tip-title">Datos financieros</div>
+                <div class="tip-text">Total, subtotal, impuesto (IVA/IGV) y porcentaje</div>
+              </div>
+            </div>
+            <div class="tip">
+              <div class="tip-dot"></div>
+              <div>
+                <div class="tip-title">Vendor y cliente</div>
+                <div class="tip-text">Nombre, NIT/RUC/CIF e identificaciones tributarias</div>
+              </div>
+            </div>
+            <div class="tip">
+              <div class="tip-dot"></div>
+              <div>
+                <div class="tip-title">Categoría contable</div>
+                <div class="tip-text">Asignación automática vía IA a las cuentas del plan</div>
+              </div>
+            </div>
+            <div class="tip">
+              <div class="tip-dot"></div>
+              <div>
+                <div class="tip-title">Líneas de detalle</div>
+                <div class="tip-text">Productos o servicios con cantidad y precio unitario</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="err" id="err"></div>
+
+      <!-- Resultado -->
+      <div id="res" style="margin-top:16px">
+        <div class="card">
+          <div class="res-header">
+            <div class="res-title">
+              <span class="res-dot"></span>
+              Resultado del procesamiento
+            </div>
+            <button class="btn btn-sm btn-ghost" onclick="closeResult()">✕ Cerrar</button>
+          </div>
+
+          <div class="res-grid">
+            <!-- Columna izquierda -->
+            <div class="res-col">
+              <div id="cVendor" style="display:none">
+                <div class="sec">Empresa / Vendor</div>
+                <div class="vendor-row">
+                  <div class="vendor-av" id="vAv"></div>
+                  <div>
+                    <div class="vendor-name" id="vName"></div>
+                    <div class="vendor-meta" id="vMeta"></div>
+                    <div class="tags" id="vIds"></div>
+                  </div>
+                </div>
+                <div class="divider"></div>
+              </div>
+
+              <div id="cCustomer" style="display:none">
+                <div class="sec">Cliente / Facturado a</div>
+                <div class="vendor-row">
+                  <div class="vendor-av" id="cuAv" style="background:var(--green-lt);color:var(--green)"></div>
+                  <div>
+                    <div class="vendor-name" id="cuName"></div>
+                    <div class="tags" id="cuIds"></div>
+                  </div>
+                </div>
+                <div class="divider"></div>
+              </div>
+
+              <div id="cFin" style="display:none">
+                <div class="sec">Financiero</div>
+                <div class="fin" id="fin"></div>
+                <div class="divider"></div>
+              </div>
+
+              <div id="cCat">
+                <div class="sec">Categoría</div>
+                <div class="cat-row">
+                  <div class="cat-av missing" id="cIcon">—</div>
+                  <div>
+                    <div class="cat-name missing" id="cName">Sin categoría</div>
+                    <div class="cat-sub" id="cSub">No determinada</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Columna derecha -->
+            <div class="res-col">
+              <div id="cItems" style="display:none">
+                <div class="sec">Líneas de detalle</div>
+                <table class="items-tbl">
+                  <thead><tr>
+                    <th>Descripción</th>
+                    <th style="text-align:center">Cant.</th>
+                    <th style="text-align:right">P.Unit</th>
+                    <th style="text-align:right">Total</th>
+                  </tr></thead>
+                  <tbody id="iTbody"></tbody>
+                </table>
+                <div class="divider"></div>
+              </div>
+
+              <div id="cDetail" style="display:none">
+                <div class="sec">Detalles</div>
+                <div class="dg" id="dg"></div>
+                <div class="divider"></div>
+              </div>
+
+              <div id="cExtraFields" style="display:none">
+                <div class="sec">Campos Extra Detectados</div>
+                <div class="dg" id="dgExtra"></div>
+                <div class="divider"></div>
+              </div>
+
+              <div id="cMeta" style="display:none">
+                <div class="meta-row" id="mRow"></div>
+                <div class="receipt-id" id="mId"></div>
+                <details style="margin-top:10px">
+                  <summary>Ver JSON completo</summary>
+                  <pre id="jPre"></pre>
+                </details>
+              </div>
+            </div>
+          </div><!-- /res-grid -->
+        </div>
+      </div><!-- /#res -->
+
+    </div>
+  </section>
+
+  <!-- ══ SECCIÓN: HISTORIAL ══════════════════════════ -->
+  <section id="historial">
+    <div class="section" style="padding-top:0">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Historial</div>
+          <div class="section-sub">Facturas procesadas — haz clic para ver el detalle</div>
+        </div>
+        <span class="module-meta" id="histMeta"></span>
+      </div>
+
+      <div class="module">
+        <div class="module-header">
+          <div>
+            <div class="module-title">Facturas procesadas</div>
+            <div class="module-sub">Ordenadas por fecha de procesamiento</div>
+          </div>
+        </div>
+
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Empresa</th>
+                <th>Fecha</th>
+                <th>Categoría</th>
+                <th class="r">Total</th>
+                <th class="c">Provider</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="histBody">
+              <tr><td colspan="6">
+                <div class="tbl-empty">Cargando historial…</div>
+              </td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
+  </section>
 
-    <!-- Customer -->
-    <div class="card" id="cCustomer" style="display:none">
-      <div class="sec">Cliente / Facturado a</div>
-      <div class="vendor-row">
-        <div class="vendor-av" id="cuAv" style="background:var(--green-light);color:var(--green)"></div>
-        <div>
-          <div class="vendor-name" id="cuName"></div>
-          <div class="tags" id="cuIds"></div>
+  <!-- ══ MODAL ═══════════════════════════════════════ -->
+  <div class="modal-backdrop" id="modalBackdrop" onclick="handleBackdropClick(event)">
+    <div class="modal" id="modalEl">
+      <div class="modal-head">
+        <div class="modal-head-text">
+          <div class="modal-title" id="modalTitle"></div>
+          <div class="modal-file" id="modalFile"></div>
         </div>
+        <button class="modal-close" onclick="closeModal()">✕</button>
       </div>
-    </div>
-
-    <!-- Financial -->
-    <div class="card" id="cFin" style="display:none">
-      <div class="sec">Resumen financiero</div>
-      <div class="fin" id="fin"></div>
-    </div>
-
-    <!-- Category — SIEMPRE visible -->
-    <div class="card" id="cCat">
-      <div class="sec">Categoría contable</div>
-      <div class="cat-row">
-        <div class="cat-icon missing" id="cIcon">🏷️</div>
-        <div>
-          <div class="cat-name missing" id="cName">Sin categoría</div>
-          <div class="cat-sub" id="cSub">No se pudo determinar automáticamente</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Items -->
-    <div class="card" id="cItems" style="display:none">
-      <div class="sec">Líneas de detalle</div>
-      <table class="items-tbl">
-        <thead><tr>
-          <th>Descripción</th>
-          <th style="text-align:center">Cant.</th>
-          <th style="text-align:right">P. Unit.</th>
-          <th>Total</th>
-        </tr></thead>
-        <tbody id="iTbody"></tbody>
-      </table>
-    </div>
-
-    <!-- Other details — solo muestra los que tienen valor -->
-    <div class="card" id="cDetail" style="display:none">
-      <div class="sec">Detalles adicionales</div>
-      <div class="dg" id="dg"></div>
-    </div>
-
-    <!-- Meta -->
-    <div class="card" id="cMeta" style="display:none">
-      <div class="meta-row" id="mRow"></div>
-      <div class="receipt-id" id="mId"></div>
-      <details style="margin-top:12px">
-        <summary>Ver JSON completo</summary>
-        <pre id="jPre"></pre>
-      </details>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
     </div>
   </div>
 
-</div>
-<script>
-/* ── refs ──────────────────────────────────────────────── */
-const frm=document.getElementById('frm'), dz=document.getElementById('dz'),
-      fi=document.getElementById('fi'), browse=document.getElementById('browse'),
-      fc=document.getElementById('fc'), btn=document.getElementById('btn'),
-      prog=document.getElementById('prog'), pf=document.getElementById('pf'),
-      pl=document.getElementById('pl'), res=document.getElementById('res'),
-      errEl=document.getElementById('err');
-
-/* ── drop zone ─────────────────────────────────────────── */
-browse.onclick = () => fi.click();
-dz.addEventListener('click', e => { if(e.target!==browse) fi.click(); });
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); pick(e.dataTransfer.files[0]); });
-fi.addEventListener('change', () => { if(fi.files[0]) pick(fi.files[0]); });
-
-function pick(f) {
-  fc.textContent = `📎 ${f.name}  ·  ${(f.size/1024).toFixed(1)} KB`;
-  btn.disabled = false;
-}
-
-/* ── helpers ───────────────────────────────────────────── */
-const CSYM = { EUR:'€', USD:'$', MXN:'$', PEN:'S/', COP:'$', CLP:'$', GBP:'£', ARS:'$', PAB:'B/.' };
-const CICONS = {
-  'Transporte':'🚗','Combustible':'⛽','Alimentación':'🍽️',
-  'Servicios Públicos':'💡','Aseo/Limpieza':'🧹','Papelería':'📋',
-  'Software/Suscripciones':'💻','Mantenimiento':'🔧',
-  'Impuestos (IVA/ITBMS)':'🏛️','Ventas':'💰','Banco Principal':'🏦','Caja':'💵',
-};
-const PM_LABEL = { CARD:'💳 Tarjeta', CASH:'💵 Efectivo', TRANSFER:'🏦 Transferencia', OTHER:'🔄 Otro' };
-const TYPE_LABEL = { expense:'Gasto', income:'Ingreso', tax:'Impuesto', payment_account:'Cuenta de pago' };
-
-function money(val, cur) {
-  if(val==null) return null;
-  try { return new Intl.NumberFormat('es-ES',{style:'currency',currency:cur||'USD'}).format(val); }
-  catch { return `${CSYM[cur]||''}${Number(val).toLocaleString('es',{minimumFractionDigits:2})}`; }
-}
-
-function show(id) { document.getElementById(id).style.display='block'; }
-
-/* progress steps */
-const STEPS=[
-  {p:12,l:'Subiendo archivo…'},
-  {p:30,l:'OCR con Tesseract (eng+spa)…'},
-  {p:52,l:'Parseando campos…'},
-  {p:72,l:'Estructurando con IA…'},
-  {p:88,l:'Categorizando gasto…'},
-  {p:96,l:'Guardando…'},
-];
-function startProg() {
-  let i=0; prog.classList.add('on'); pf.style.width='4%';
-  const t=setInterval(()=>{
-    if(i>=STEPS.length){clearInterval(t);return;}
-    pf.style.width=STEPS[i].p+'%'; pl.textContent=STEPS[i].l; i++;
-  },950);
-  return t;
-}
-
-/* ── render ────────────────────────────────────────────── */
-function render(data) {
-  const j = data.json ?? data;
-  const cur = j.currency || 'USD';
-
-  /* Vendor — mostrar si hay algo útil */
-  const vname = j.vendorName;
-  if (vname) {
-    document.getElementById('vAv').textContent = vname.charAt(0).toUpperCase();
-    document.getElementById('vName').textContent = vname;
-    const meta = [];
-    if (j.date) meta.push(`📅 ${j.date}`);
-    if (j.invoiceNumber) meta.push(`🔖 Factura ${j.invoiceNumber}`);
-    if (j.paymentMethod) meta.push(PM_LABEL[j.paymentMethod] || j.paymentMethod);
-    document.getElementById('vMeta').textContent = meta.join('  ·  ');
-    const ids = j.vendorIdentifications ?? [];
-    document.getElementById('vIds').innerHTML = ids
-      .map(id => `<span class="badge b-purple">${id}</span>`).join('');
-    show('cVendor');
-  }
-
-  /* Customer — solo si se detectó */
-  const cuname = j.customerName;
-  if (cuname) {
-    document.getElementById('cuAv').textContent = cuname.charAt(0).toUpperCase();
-    document.getElementById('cuName').textContent = cuname;
-    const cuIds = j.customerIdentifications ?? [];
-    document.getElementById('cuIds').innerHTML = cuIds
-      .map(id => `<span class="badge b-green">${id}</span>`).join('');
-    show('cCustomer');
-  }
-
-  /* Financial — mostrar si hay al menos un monto */
-  const hasAmount = j.amount!=null || j.subtotalAmount!=null || j.taxAmount!=null;
-  if (hasAmount) {
-    const taxSub = j.taxPercentage!=null ? `${j.taxPercentage}%` : null;
-    document.getElementById('fin').innerHTML =
-      cell(false,'Subtotal', money(j.subtotalAmount,cur), null) +
-      cell(false,'Impuesto', money(j.taxAmount,cur), taxSub) +
-      cell(true, 'Total',    money(j.amount,cur),    cur);
-    show('cFin');
-  }
-
-  /* Category — SIEMPRE visible, estado found o missing */
-  const catName = j.categoryName || (j.category!=null ? `Cuenta #${j.category}` : null);
-  const iconEl = document.getElementById('cIcon');
-  const nameEl = document.getElementById('cName');
-  const subEl  = document.getElementById('cSub');
-  if (catName) {
-    iconEl.textContent = CICONS[j.categoryName] || '🏷️';
-    iconEl.className = 'cat-icon found';
-    nameEl.textContent = catName;
-    nameEl.className = 'cat-name';
-    const typeLabel = j.categoryType ? TYPE_LABEL[j.categoryType] || j.categoryType : '';
-    subEl.innerHTML = [
-      j.category != null ? `ID: ${j.category}` : '',
-      typeLabel ? `<span class="badge b-green">${typeLabel}</span>` : '',
-    ].filter(Boolean).join('  ');
-  }
-  // si category es null, el card ya muestra el estado "Sin categoría" por defecto
-
-  /* Items */
-  const items = j.items ?? [];
-  if (items.length > 0) {
-    document.getElementById('iTbody').innerHTML = items.map(it => `
-      <tr>
-        <td>${it.description ?? '—'}</td>
-        <td style="text-align:center">${it.quantity ?? 1}</td>
-        <td style="text-align:right">${money(it.unitPrice,cur) ?? '—'}</td>
-        <td style="text-align:right">${money(it.total,cur) ?? '—'}</td>
-      </tr>`).join('');
-    show('cItems');
-  }
-
-  /* Details — solo muestra filas que tienen valor */
-  const detailRows = [
-    ['Fecha', j.date],
-    ['No. Factura', j.invoiceNumber],
-    ['Moneda', j.currency ? `${CSYM[j.currency]||''} ${j.currency}`.trim() : null],
-    ['Método de pago', j.paymentMethod ? PM_LABEL[j.paymentMethod] : null],
-    ['Tipo', j.type ? (j.type==='income'?'Ingreso':'Gasto') : null],
-    ['Descripción', j.description],
-  ].filter(([,v]) => v!=null && v!=='');
-
-  if (detailRows.length > 0) {
-    document.getElementById('dg').innerHTML = detailRows
-      .map(([l,v]) => `<div class="dg-cell"><div class="dg-lbl">${l}</div><div class="dg-val">${v}</div></div>`)
-      .join('');
-    show('cDetail');
-  }
-
-  /* Meta */
-  let confPill = '';
-  if (typeof j.ocrConfidence === 'number') {
-    const pct = Math.round(j.ocrConfidence * 100);
-    const cls = pct >= 80 ? 'b-green' : pct >= 50 ? 'b-amber' : 'b-gray';
-    const label = pct >= 80 ? 'alta' : pct >= 50 ? 'media' : 'baja';
-    confPill = `<span class="badge ${cls}">📊 Confianza ${label} (${pct}%)</span>`;
-  }
-  document.getElementById('mRow').innerHTML =
-    `<span class="pill">🔍 OCR: ${data.ocrProvider||'—'}</span>` +
-    `<span class="pill">🤖 IA: ${data.aiProvider||'—'}</span>` +
-    confPill;
-  document.getElementById('mId').textContent = `Receipt ID: ${data.id||''}`;
-  document.getElementById('jPre').textContent = JSON.stringify(data, null, 2);
-  show('cMeta');
-}
-
-function cell(isMain, label, value, sub) {
-  return `<div class="fin-cell${isMain?' main':''}">
-    <div class="fin-lbl">${label}</div>
-    <div class="fin-val">${value??'—'}</div>
-    ${sub?`<div class="fin-sub">${sub}</div>`:''}
-  </div>`;
-}
-
-/* ── submit ────────────────────────────────────────────── */
-frm.addEventListener('submit', async e => {
-  e.preventDefault();
-  errEl.style.display='none';
-  res.style.display='none';
-  ['cVendor','cCustomer','cFin','cItems','cDetail','cMeta'].forEach(id=>{
-    document.getElementById(id).style.display='none';
-  });
-  // resetear category a estado default
-  document.getElementById('cIcon').className='cat-icon missing';
-  document.getElementById('cIcon').textContent='🏷️';
-  document.getElementById('cName').className='cat-name missing';
-  document.getElementById('cName').textContent='Sin categoría';
-  document.getElementById('cSub').innerHTML='No se pudo determinar automáticamente';
-
-  btn.disabled=true;
-  const timer=startProg();
-
-  let data;
-  try {
-    const r = await fetch('/api/receipts',{method:'POST',body:new FormData(frm)});
-    clearInterval(timer); pf.style.width='100%'; pl.textContent='Completado ✓';
-    data = await r.json();
-    if(!r.ok) throw new Error(data.message||`Error ${r.status}`);
-  } catch(err) {
-    clearInterval(timer); pf.style.width='100%'; pl.textContent='Error.';
-    errEl.textContent=err.message; errEl.style.display='block';
-    btn.disabled=false; return;
-  }
-
-  res.style.display='block';
-  render(data);
-  btn.disabled=false;
-});
-</script>
+  <script src="/app.js"></script>
 </body>
 </html>

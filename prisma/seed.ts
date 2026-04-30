@@ -26,6 +26,7 @@ async function main() {
     { name: "Papelería", type: AccountType.expense },
     { name: "Software/Suscripciones", type: AccountType.expense },
     { name: "Mantenimiento", type: AccountType.expense },
+    { name: "Ropa/Vestimenta", type: AccountType.expense },
     { name: "Impuestos (IVA/ITBMS)", type: AccountType.tax },
     { name: "Ventas", type: AccountType.income },
     { name: "Banco Principal", type: AccountType.payment_account },
