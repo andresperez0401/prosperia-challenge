@@ -3,6 +3,10 @@ import { logger } from "../../config/logger.js";
 import { normalizeAmount } from "./normalizers/normalizeAmount.js";
 import { normalizeDate } from "./normalizers/normalizeDate.js";
 
+// ── Public re-exports expected by tests ──────────────────────────────────────
+export { normalizeAmount as parseAmount };
+export { normalizeDate as extractDate };
+
 export interface TotalCandidate {
   label: string;
   value: number;
@@ -38,7 +42,7 @@ export function extractAllTotalCandidates(text: string): TotalCandidate[] {
 }
 
 const SKIP_VENDOR =
-  /^(seniat|sentat|sen[il]at|providencia|administraci[oó]n\s+tributaria|servicio\s+nacional|ministerio|repúblic|gobierno|national\s+tax|iva\b|tax\s+auth|fecha\b|factura\b|invoice\b|recibo\b|receipt\b|tel[eé]f|fax|e-?mail|www\.|http|rif\b|ruc\b|nit\b|comprobante\b|dgi\b|factura\s+de\s+operaci[oó]n|tipo\s+de\s+receptor|emisor\b|cliente\b|receptor\b)/i;
+  /^(seniat|sentat|sen[il]at|providencia|administraci[oó]n\s+tributaria|servicio\s+nacional|ministerio|repúblic|gobierno|national\s+tax|iva\b|tax\s+auth|fecha\b|factura\b|invoice\b|recibo\b|receipt\b|tel[eé]f|fax|e-?mail|www\.|http|rif\b|ruc\b|nit\b|dv\b|comprobante\b|dgi\b|factura\s+de\s+operaci[oó]n|tipo\s+de\s+receptor|emisor\b|cliente\b|receptor\b|direcci[oó]n\b|punto\s+de\s+facturaci[oó]n)/i;
 
 /** Returns key→value pairs found by label scanning — sent verbatim to the AI for verification */
 export function extractRawLabeledFields(text: string): Record<string, string> {
@@ -76,17 +80,17 @@ export function extractRawLabeledFields(text: string): Record<string, string> {
 }
 
 export function naiveParse(rawText: string): Partial<ParsedReceipt> {
-  const amount = extractAmount(rawText);
+  const amount = extractTotal(rawText);
   const subtotal = extractSubtotal(rawText);
   let tax = extractTax(rawText);
-  let pct = extractTaxPct(rawText);
+  let pct = extractTaxPercentage(rawText);
   const date = normalizeDate(rawText);
   const invoice = findInvoice(rawText);
   const labeled = extractLabeledParties(rawText);
-  const vendorName = labeled.vendorName ?? guessVendorName(rawText);
+  const vendorName = labeled.vendorName ?? extractVendorName(rawText);
   const vendorIdentifications = labeled.vendorIds.length
     ? labeled.vendorIds
-    : extractVendorIdentifications(rawText);
+    : extractVendorIds(rawText);
   const customerName = labeled.customerName;
   const customerIdentifications = labeled.customerIds;
   const paymentMethod = extractPaymentMethod(rawText);
@@ -120,6 +124,46 @@ export function naiveParse(rawText: string): Partial<ParsedReceipt> {
   };
 }
 
+// ── reconcile ────────────────────────────────────────────────────────────────
+/**
+ * Derive missing subtotal/tax using math: subtotal + tax ≈ total.
+ * Never overwrites values that are already present.
+ * Returns what can be inferred; values beyond inference stay null.
+ */
+export function reconcile(
+  total: number | null,
+  subtotal: number | null,
+  tax: number | null,
+  pct: number | null,
+): { subtotal: number | null; tax: number | null } {
+  if (total === null) return { subtotal: null, tax: null };
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+
+  // Both present — return as-is (don't overwrite even if math doesn't check out)
+  if (subtotal !== null && tax !== null) return { subtotal, tax };
+
+  // subtotal + pct → tax
+  if (subtotal !== null && tax === null && pct !== null) {
+    return { subtotal, tax: r2((subtotal * pct) / 100) };
+  }
+
+  // subtotal known, tax unknown → derive
+  if (subtotal !== null && tax === null) {
+    const d = r2(total - subtotal);
+    return { subtotal, tax: d >= 0 ? d : null };
+  }
+
+  // tax known, subtotal unknown → derive
+  if (subtotal === null && tax !== null) {
+    const d = r2(total - tax);
+    return { subtotal: d > 0 ? d : null, tax };
+  }
+
+  return { subtotal: null, tax: null };
+}
+
+// ── Private helpers ──────────────────────────────────────────────────────────
+
 /**
  * Universal labeled-field extraction for any structured invoice.
  * Works for Panama DGI, Mexican CFDI, Colombian, Venezuelan, etc.
@@ -130,31 +174,43 @@ function extractLabeledParties(text: string): {
   customerName: string | null;
   customerIds: string[];
 } {
-  const result = { vendorName: null as string | null, vendorIds: [] as string[], customerName: null as string | null, customerIds: [] as string[] };
+  const result = {
+    vendorName: null as string | null,
+    vendorIds: [] as string[],
+    customerName: null as string | null,
+    customerIds: [] as string[],
+  };
 
   // Boundary between vendor and customer sections
-  const customerBoundary = /(?:Tipo de Receptor|Receptor\s*:|Adquir(?:iente|ente)\s*:|Comprador\s*:|Datos del Cliente)/i;
+  const customerBoundary =
+    /(?:Tipo de Receptor|Datos del (?:Cliente|Receptor|Comprador)|Receptor\s*:|Adquir(?:iente|ente)\s*:|Comprador\s*:|Bill(?:ed)?\s*To\s*:|Sold\s*To\s*:)/i;
   const parts = text.split(customerBoundary);
   const vendorSection = parts[0] ?? text;
   const customerSection = parts.slice(1).join("\n");
 
-  // Vendor name — try labeled fields first, in priority order
-  const vendorLabelRe = /(?:Emisor|Proveedor|Vendedor|Raz[oó]n Social|Empresa|Establecimiento)\s*:\s*(.+)/i;
-  const vendorMatch = text.match(vendorLabelRe);
+  // Vendor name — labeled fields in priority order
+  const vendorLabelRe =
+    /(?:Emisor|Proveedor|Vendedor|Raz[oó]n\s*Social\s*(?:Emisor)?|Empresa|Establecimiento)\s*:\s*(.+)/i;
+  const vendorMatch = vendorSection.match(vendorLabelRe);
   if (vendorMatch) result.vendorName = vendorMatch[1].trim();
 
-  // Vendor tax ID — RUC, RFC, NIT, CUIT, RIF, VAT, CIF in vendor section
-  const vendorIdRe = /(?:RUC|RFC|NIT|CUIT|RIF|CIF|VAT\s*(?:ID|No\.?)?)\s*[:\-]?\s*([\w\d\-\.]{5,25})/i;
+  // Vendor tax ID — in vendor section only
+  const vendorIdRe =
+    /(?:RUC|RFC|NIT|CUIT|RIF|CIF|EIN|VAT\s*(?:ID|No\.?)?)\s*[:\-]?\s*([\w\d\-\.]{5,25})/i;
   const vendorIdMatch = vendorSection.match(vendorIdRe);
   if (vendorIdMatch) result.vendorIds = [vendorIdMatch[1].trim().toUpperCase()];
 
-  // Customer name
-  const customerLabelRe = /(?:Cliente|Receptor|Comprador|Adquir(?:iente|ente)|Destinatario|Customer|Bill(?:ed)?\s+To)\s*:\s*(.+)/i;
-  const customerMatch = text.match(customerLabelRe);
+  // Customer name — search in customer section (after the boundary)
+  const customerLabelRe =
+    /(?:Cliente|Receptor|Comprador|Adquir(?:iente|ente)|Destinatario|Customer|Bill(?:ed)?\s+To|Sold\s+To|Raz[oó]n\s*Social)\s*:\s*(.+)/i;
+  const customerMatch = customerSection
+    ? customerSection.match(customerLabelRe)
+    : text.match(/(?:Cliente|Receptor|Comprador|Adquir(?:iente|ente)|Destinatario|Customer|Bill(?:ed)?\s+To)\s*:\s*(.+)/i);
   if (customerMatch) result.customerName = customerMatch[1].trim();
 
   // Customer tax ID — in customer section only
-  const customerIdRe = /(?:RUC\/C[eé]dula\/Pasaporte|RFC|NIT|CUIT|RIF|C\.?I\.?)\s*[:\-]?\s*([\w\d\-\.\/]{4,25})/i;
+  const customerIdRe =
+    /(?:RUC\/C[eé]dula\/Pasaporte|RFC|NIT|CUIT|RIF|C\.?I\.?|EIN)\s*[:\-]?\s*([\w\d\-\.\/]{4,25})/i;
   const customerIdMatch = customerSection.match(customerIdRe);
   if (customerIdMatch) result.customerIds = [customerIdMatch[1].trim().toUpperCase()];
 
@@ -174,7 +230,19 @@ function grabAmount(text: string, re: RegExp, group = 1): number | null {
   return n !== null && n > 0 ? n : null;
 }
 
-function extractAmount(text: string): number | null {
+/** Like grabAmount but accepts whole numbers (for OCR column-merge cases). */
+function grabAmountLoose(text: string, re: RegExp, group = 1): number | null {
+  const m = text.match(re);
+  if (!m) return null;
+  const raw = m[group];
+  if (!raw || !/\d/.test(raw)) return null;
+  const n = normalizeAmount(raw);
+  return n !== null && n > 0 ? n : null;
+}
+
+// ── Exported extraction functions (used by tests + pipeline) ─────────────────
+
+export function extractTotal(text: string): number | null {
   const patterns: RegExp[] = [
     // Most specific labels first
     /total\s+a\s+pagar\s*[:\-=]?\s*(?:bs\.?\s*)?([\d.,]+)/i,
@@ -182,12 +250,15 @@ function extractAmount(text: string): number | null {
     /\bgrand\s+total\s*[:\-=]?\s*(?:bs\.?\s*)?([\d.,]+)/i,
     /\bamount\s+due\s*[:\-=]?\s*(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
     /\btotal\s+due\s*[:\-=]?\s*(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
+    /\bbalance\s+due\s*[:\-=]?\s*(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
     /\bimporte\s+total\s*[:\-=]?\s*(?:bs\.?\s*)?([\d.,]+)/i,
     /\btotal\s+a\s+cobrar\s*[:\-=]?\s*(?:bs\.?\s*)?([\d.,]+)/i,
     /\bmonto\s+total\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
     /\btotal\s+general\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
     /\bneto\s+a\s+pagar\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
     /\bvalor\s+total\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
+    /\btotal\s+venta\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
+    /\btotal\s+pagado\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
     /\btotal\s+(?:bs|usd|\$|b\/\.)\s*[:\-=]?\s*([\d.,]+)/i,
     // Line that is just "TOTAL: 123.45" or "TOTAL 123.45"
     /^\s*total\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)\s*$/im,
@@ -203,7 +274,7 @@ function extractAmount(text: string): number | null {
   return null;
 }
 
-function extractSubtotal(text: string): number | null {
+export function extractSubtotal(text: string): number | null {
   const patterns: RegExp[] = [
     /sub\s*total\s*[:\-=]?\s*(?:bs\.?\s*)?([\d.,]+)/i,
     /\bbase\s+imponible\s*[:\-=]?\s*(?:bs\.?\s*)?([\d.,]+)/i,
@@ -214,21 +285,37 @@ function extractSubtotal(text: string): number | null {
     // Thermal receipts: SUBT / SUBTL / SUBT. with optional noise before amount
     /^\s*subt?l?[.\s]*[:\-=]?\s*(?:\$\s*)?([\d.,]+)/im,
     /\bsubtotal\b[^\d\n]{0,25}([\d.,]+)/i,
+    // Generic "neto:" (net amount without tax)
+    /\bneto\s*[:\-=]?\s*(?:[\$€£]\s*)?([\d.,]+)/i,
+    // "Valor Total" = sum of line items (subtotal before tax in structured invoices)
+    /\bvalor\s+total\s*[:\-=]?\s*(?:bs\.?\s*)?(?:[\$€£B\/\.]\s*)?([\d.,]+)/i,
   ];
   for (const re of patterns) {
     const n = grabAmount(text, re);
     if (n !== null) return n;
   }
+
+  // OCR column-merge fallback: "subtotal500", "subtotal 500€", "subtotal: 500"
+  // Accepts integers (no decimal required) for this specific keyword
+  const mergeMatch = text.match(/\bsubtotal\s*[:\-=€$£B\/\.]?\s*(\d+(?:[.,]\d+)?)/i);
+  if (mergeMatch?.[1]) {
+    const n = normalizeAmount(mergeMatch[1]);
+    if (n !== null && n > 0) return n;
+  }
+
   return null;
 }
 
-function extractTax(text: string): number | null {
+export function extractTax(text: string): number | null {
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
     if (!/\b(iva|igv|itbms|itbis|vat|tax|impuesto|sales\s+tax)\b/i.test(line)) continue;
 
     // Explicit exemption → tax is definitively 0
-    if (/\b(exento|exempt|exclu[íi]do|excluido|libre\s+de\s+iva|sin\s+iva|no\s+sujeto)\b/i.test(line)) return 0;
+    if (
+      /\b(exento|exempt|exclu[íi]do|excluido|libre\s+de\s+iva|sin\s+iva|no\s+sujeto)\b/i.test(line)
+    )
+      return 0;
 
     const nums: number[] = [];
     for (const m of line.matchAll(/([\d.,]+)/g)) {
@@ -244,14 +331,11 @@ function extractTax(text: string): number | null {
   return null;
 }
 
-function extractZeroTaxSignal(text: string): boolean {
-  // Returns true when invoice explicitly signals zero/exempt tax
-  return /\b(exento|exempt|0\s*%\s*(?:iva|igv|itbms|vat)|iva\s*0[.,]?0*%?|itbms\s*0|sin\s+impuesto|libre\s+de\s+impuesto)\b/i.test(text);
-}
-
-function extractTaxPct(text: string): number | null {
+export function extractTaxPercentage(text: string): number | null {
+  // Bug fix: exclude digits from the middle part ([^%\d\n]) so the regex
+  // doesn't consume the leading digit of the percentage (e.g. "IVA 12%" → 12, not 2).
   const m =
-    text.match(/\b(?:iva|igv|vat|tax|impuesto)\b[^%\n]{0,30}(\d{1,2}(?:[.,]\d{1,2})?)\s*%/i) ||
+    text.match(/\b(?:iva|igv|vat|tax|impuesto)\b[^%\d\n]{0,30}(\d{1,2}(?:[.,]\d{1,2})?)\s*%/i) ||
     text.match(/(\d{1,2}(?:[.,]\d{1,2})?)\s*%[^%\n]{0,20}\b(?:iva|igv|vat|tax|impuesto)\b/i);
   if (m) {
     const n = parseFloat((m[1] ?? "").replace(",", "."));
@@ -260,28 +344,35 @@ function extractTaxPct(text: string): number | null {
   return null;
 }
 
-/** Short codes that look like terminal/POS IDs, not business names */
-const SKIP_TERMINAL = /^(DC\d+|POS[\-\s]?\d*|TERM[\-\s]?\d+|CAJA\s*\d+|REG\s*\d+|TML\s*\d+|[A-Z]{1,3}\d{1,4})$/i;
+function extractZeroTaxSignal(text: string): boolean {
+  return /\b(exento|exempt|0\s*%\s*(?:iva|igv|itbms|vat)|iva\s*0[.,]?0*%?|itbms\s*0|sin\s+impuesto|libre\s+de\s+impuesto)\b/i.test(
+    text,
+  );
+}
 
-function guessVendorName(raw: string): string | null {
-  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+/** Short codes that look like terminal/POS IDs, not business names */
+const SKIP_TERMINAL =
+  /^(DC\d+|POS[\-\s]?\d*|TERM[\-\s]?\d+|CAJA\s*\d+|REG\s*\d+|TML\s*\d+|[A-Z]{1,3}\d{1,4})$/i;
+
+export function extractVendorName(raw: string): string | null {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   for (const line of lines.slice(0, 10)) {
     if (line.length < 4 || line.length > 80) continue;
     if (SKIP_VENDOR.test(line)) continue;
     if (SKIP_TERMINAL.test(line)) continue;
-    // Skip pure numbers, symbols, or dates
     if (/^[\d\s\-\/\\.,;:()+]+$/.test(line)) continue;
     if (/^\d{4}-\d{2}-\d{2}/.test(line)) continue;
-    // Skip lines that are clearly addresses (only numbers + short words)
     if (/^\d+\s+\w{1,4}\.?\s/.test(line) && line.split(" ").length <= 4) continue;
-    // Must have at least one letter sequence of 3+ chars
     if (!/[a-záéíóúñA-ZÁÉÍÓÚÑ]{3,}/.test(line)) continue;
     return line.replace(/[,;:.]+$/, "").trim();
   }
   return null;
 }
 
-function extractVendorIdentifications(text: string): string[] {
+export function extractVendorIds(text: string): string[] {
   const ids: string[] = [];
   const patterns = [
     /rif\s*[:\-]?\s*([jgve]-?\d[\d\-]+\d)/i,
@@ -289,6 +380,7 @@ function extractVendorIdentifications(text: string): string[] {
     /nit\s*[:\-]?\s*([\d\-\.]{6,20})/i,
     /cif\s*[:\-]?\s*([a-z0-9\-\.]{6,20})/i,
     /cuit\s*[:\-]?\s*([\d\-\.]{8,20})/i,
+    /ein\s*[:\-]?\s*(\d{2}-\d{7})/i,
     /vat\s*(?:id\s*)?[:\-]?\s*([a-z]{2}[a-z0-9]{6,18})/i,
   ];
   for (const re of patterns) {
@@ -299,20 +391,21 @@ function extractVendorIdentifications(text: string): string[] {
 }
 
 function findInvoice(text: string): string | null {
-  // Labels that must never become invoiceNumber
   const NOT_LABEL = /^(fecha|date|serie|hora|fax|tel|rif|ruc|nit|cif|vat)/i;
   const patterns: RegExp[] = [
     /(?:factura|invoice)\s*(?:nro\.?|no\.?|n[uú]m\.?|n[°o]\.?|#)?\s*[:\-]?\s*([a-z0-9][a-z0-9\-\/]{3,19})/i,
     /(?:n[uú]mero|number)\s+(?:de\s+)?(?:factura|comprobante|invoice)\s*[:\-]?\s*([a-z0-9][a-z0-9\-\/]{3,19})/i,
     /comprobante\s*(?:nro\.?|no\.?|#)?\s*[:\-]?\s*([a-z0-9][a-z0-9\-\/]{3,19})/i,
+    // Plain "Número: NNNNN" — Panama DGI and other structured invoices
+    /\bn[uú]mero\s*:\s*(\d{4,20})/i,
   ];
   for (const re of patterns) {
     const m = text.match(re);
     if (m?.[1]) {
       const candidate = m[1].toUpperCase().trim();
       if (NOT_LABEL.test(candidate)) continue;
-      if (/^\d{4}[-\/]\d{2}[-\/]\d{2}$/.test(candidate)) continue; // ISO date
-      if (/^[A-Z]{4,}$/.test(candidate)) continue; // pure uppercase word (FECHA, DATE…)
+      if (/^\d{4}[-\/]\d{2}[-\/]\d{2}$/.test(candidate)) continue;
+      if (/^[A-Z]{4,}$/.test(candidate)) continue;
       return candidate;
     }
   }
@@ -327,7 +420,10 @@ function extractPaymentMethod(text: string): ParsedReceipt["paymentMethod"] {
 }
 
 function extractItems(rawText: string): Item[] {
-  const lines = rawText.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
   const items: Item[] = [];
   const RE =
     /^(.+?)\s+(\d{1,4})\s+(?:[Bb][Ss]\.?\s*)?(?:[\$€£]\s*)?([\d.,]+)\s+(?:[Bb][Ss]\.?\s*)?(?:[\$€£]\s*)?([\d.,]+)\s*$/;
@@ -345,3 +441,13 @@ function extractItems(rawText: string): Item[] {
   }
   return items;
 }
+
+// ── Legacy internal aliases (keep naiveParse working) ────────────────────────
+/** @deprecated use extractTotal */
+const extractAmount = extractTotal;
+/** @deprecated use extractTaxPercentage */
+const extractTaxPct = extractTaxPercentage;
+/** @deprecated use extractVendorName */
+const guessVendorName = extractVendorName;
+/** @deprecated use extractVendorIds */
+const extractVendorIdentifications = extractVendorIds;

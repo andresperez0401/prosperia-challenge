@@ -12,6 +12,32 @@ import {
   naiveParse,
 } from "./parser.js";
 
+// Real OCR text from samples/factura1.jpg (Panama DGI, exento ITBMS)
+const FACTURA1_OCR = `Comprobante Auxiliar de Factura Electronica
+Factura de Operación Interna
+Emisor: DERMA MEDICAL CENTER S.A.
+RUC: 155726599-2-2022
+DV: 45
+Dirección: Calle Ramón H Jurado The Panama Clinic Torre B, Piso 23.
+Tipo de Receptor: Consumidor final
+Cliente: george Nauyok
+RUC/Cédula/Pasaporte:
+Número: 0000007838
+Fecha de Emisión: 03/06/2025
+https://dgi-fep.mef.gob.pa/Consultas/FacturasPorCUFE
+Consulta Dr. Jessing 85.00 17.00 68.00 68.00
+Harris
+Destrucción lesiones 200.00 0.00 200.00 200.00
+Valor Total 268.00
+Desglose ITBMS
+268.00 Exento 0.00
+Monto Gravado ITBMS 0.00
+Total Impuesto 0.00
+Forma de Pago
+Tarjeta de Crédito 268.00
+TOTAL PAGADO 268.00
+Vuelto 0.00`;
+
 describe("parseAmount", () => {
   it("handles US format", () => expect(parseAmount("1,234.56")).toBe(1234.56));
   it("handles EU/LATAM format", () => expect(parseAmount("1.234,56")).toBe(1234.56));
@@ -182,4 +208,34 @@ describe("parseAmount — edge cases adicionales", () => {
 
   it("retorna null para string de solo símbolos", () =>
     expect(parseAmount("€$")).toBeNull());
+});
+
+// ---------------------------------------------------------------------------
+// factura1.jpg — Panama DGI, exento ITBMS, dos servicios con descuento
+// ---------------------------------------------------------------------------
+describe("factura1 — DERMA MEDICAL CENTER (Panama DGI, exento ITBMS)", () => {
+  it("amount = 268 (TOTAL PAGADO)", () =>
+    expect(extractTotal(FACTURA1_OCR)).toBe(268));
+
+  it("subtotal = 268 (Valor Total, base exenta)", () =>
+    expect(extractSubtotal(FACTURA1_OCR)).toBe(268));
+
+  it("taxAmount = 0 (exento)", () =>
+    expect(extractTax(FACTURA1_OCR)).toBe(0));
+
+  it("vendorName = DERMA MEDICAL CENTER S.A. (via naiveParse labeled-field)", () =>
+    expect(naiveParse(FACTURA1_OCR).vendorName).toBe("DERMA MEDICAL CENTER S.A."));
+
+  it("customerName captura al cliente (george Nauyok)", () =>
+    expect(naiveParse(FACTURA1_OCR).customerName).toBe("george Nauyok"));
+
+  it("invoiceNumber extrae Número: 0000007838", () =>
+    expect(naiveParse(FACTURA1_OCR).invoiceNumber).toBeTruthy());
+
+  it("naiveParse: amount=268, subtotal=268, tax=0", () => {
+    const r = naiveParse(FACTURA1_OCR);
+    expect(r.amount).toBe(268);
+    expect(r.subtotalAmount).toBe(268);
+    expect(r.taxAmount).toBe(0);
+  });
 });
