@@ -2,7 +2,15 @@ import { prisma } from "../db/client.js";
 import { getOcrProvider } from "./ocr/index.js";
 import { getAiProvider } from "./ai/index.js";
 import { parseReceipt } from "./parsing/parseReceipt.js";
-import { extractAllTotalCandidates, extractRawLabeledFields } from "./parsing/parser.js";
+import {
+  extractAllTotalCandidates,
+  extractAllSubtotalCandidates,
+  extractAllTaxCandidates,
+  extractRawLabeledFields,
+  extractVendorCandidates,
+  extractCustomerCandidates,
+  extractClassifiedIdentifications,
+} from "./parsing/parser.js";
 import { categorize } from "./parsing/categorizer.js";
 import { detectCurrency } from "./parsing/detect.currency.js";
 import { pdfToImages } from "./pdf/pdfHandler.js";
@@ -104,29 +112,44 @@ export async function processReceipt(
   const parsedResult = parseReceipt(parseCtx);
   const base = parsedResult.fields;
 
-  // 5. AI calls — structure + categorize run in parallel for speed.
-  // categorize uses rules-only data (no need to wait for structure).
-  const totalCandidates = extractAllTotalCandidates(reconstructedText || rawText);
-  const labeledFields = extractRawLabeledFields(reconstructedText || rawText);
+  // 5. AI structuring + categorization in a SINGLE call (saves tokens vs. two prompts).
+  // The AI receives every candidate it might need (totals, subtotals, taxes, vendor/customer
+  // names, classified IDs, accounts list) and decides which value belongs in each field.
+  const ctxText = reconstructedText || rawText;
+  const totalCandidates = extractAllTotalCandidates(ctxText);
+  const subtotalCandidates = extractAllSubtotalCandidates(ctxText);
+  const taxCandidates = extractAllTaxCandidates(ctxText);
+  const labeledFields = extractRawLabeledFields(ctxText);
+  const vendorCandidates = extractVendorCandidates(ctxText);
+  const customerCandidates = extractCustomerCandidates(ctxText);
+  const identifications = extractClassifiedIdentifications(ctxText);
 
-  const [aiStruct, aiCatResult] = await Promise.all([
-    ai.structure({
+  // Load accounts once and pass to structure() so the AI can pick a category in the same call.
+  const accounts = await prisma.account
+    .findMany({ select: { id: true, name: true, type: true } })
+    .catch(() => [] as { id: number; name: string; type: string }[]);
+
+  const aiStruct = await ai
+    .structure({
       rawText,
       reconstructedText,
       partialFields: base,
       warnings: parsedResult.warnings,
       totalCandidates,
+      subtotalCandidates,
+      taxCandidates,
       labeledFields,
-    }).catch((err) => {
+      vendorCandidates,
+      customerCandidates,
+      identifications,
+      accounts,
+    })
+    .catch((err) => {
       logger.error("AI Structure failed", err);
       return {} as Partial<ParsedReceipt>;
-    }),
-    ai.categorize({
-      rawText,
-      items: base.items ?? [],
-      vendorName: base.vendorName ?? null,
-    }).catch(() => ({} as Partial<ParsedReceipt>)),
-  ]);
+    });
+  const aiCatResult: Partial<ParsedReceipt> =
+    aiStruct.category != null ? { category: aiStruct.category } : {};
 
   // Financial fields: AI always wins — sees all total candidates and full context.
   // Identity fields: AI fills missing OR corrects obviously wrong values (terminal codes, doc titles).
@@ -206,6 +229,11 @@ export async function processReceipt(
     }
   }
 
+  if ((aiStruct as any)._aiWarnings?.length) {
+    mergedFields.extraFields = mergedFields.extraFields || {};
+    mergedFields.extraFields["Advertencias IA"] = (aiStruct as any)._aiWarnings.join(" | ");
+  }
+
   const json = {
     amount: mergedFields.amount ?? null,
     subtotalAmount: mergedFields.subtotalAmount ?? null,
@@ -244,7 +272,7 @@ export async function processReceipt(
       rawText,
       json,
       ocrProvider: process.env.OCR_PROVIDER || "tesseract",
-      aiProvider: process.env.AI_PROVIDER || "mock",
+      aiProvider: (aiStruct as any)._aiProviderUsed || process.env.AI_PROVIDER || "mock",
     },
   });
 

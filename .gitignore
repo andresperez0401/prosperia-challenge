@@ -23,3 +23,7 @@ prisma/dev.db
 agents
 .claude
 docs
+.agents
+.opencode
+
+AGENTS.md

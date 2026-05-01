@@ -1,17 +1,21 @@
 <!doctype html>
 <html lang="es">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Mini Prosperia</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
   <meta name="theme-color" content="#2ba85f" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="apple-touch-icon" href="/favicon.svg" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
+
 <body>
 
   <!-- ══ NAVBAR ══════════════════════════════════════ -->
@@ -44,7 +48,8 @@
             <div class="dz" id="dz">
               <div class="dz-icon">
                 <svg viewBox="0 0 24 24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M12 16V8m0 0-3 3m3-3 3 3M6 20h12a2 2 0 0 0 2-2V8a2 2 0 0 0-.59-1.41l-4-4A2 2 0 0 0 14 2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z"/>
+                  <path
+                    d="M12 16V8m0 0-3 3m3-3 3 3M6 20h12a2 2 0 0 0 2-2V8a2 2 0 0 0-.59-1.41l-4-4A2 2 0 0 0 14 2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z" />
                 </svg>
               </div>
               <div class="dz-text">Arrastra aquí o <strong id="browse">selecciona un archivo</strong></div>
@@ -58,7 +63,9 @@
               </button>
             </div>
             <div class="prog" id="prog">
-              <div class="prog-track"><div class="prog-fill" id="pf"></div></div>
+              <div class="prog-track">
+                <div class="prog-fill" id="pf"></div>
+              </div>
               <div class="prog-lbl" id="pl">Iniciando…</div>
             </div>
           </form>
@@ -72,28 +79,28 @@
               <div class="tip-dot"></div>
               <div>
                 <div class="tip-title">Datos financieros</div>
-                <div class="tip-text">Total, subtotal, impuesto (IVA/IGV) y porcentaje</div>
+                <div class="tip-text">Total, Subtotal e Impuesto</div>
               </div>
             </div>
             <div class="tip">
               <div class="tip-dot"></div>
               <div>
-                <div class="tip-title">Vendor y cliente</div>
-                <div class="tip-text">Nombre, NIT/RUC/CIF e identificaciones tributarias</div>
+                <div class="tip-title">Vendedor y cliente</div>
+                <div class="tip-text">Nombre e identificaciones tributarias</div>
               </div>
             </div>
             <div class="tip">
               <div class="tip-dot"></div>
               <div>
-                <div class="tip-title">Categoría contable</div>
-                <div class="tip-text">Asignación automática vía IA a las cuentas del plan</div>
+                <div class="tip-title">Categoría de la factura</div>
+                <div class="tip-text"> Se detecta la categoría según la información de la factura</div>
               </div>
             </div>
             <div class="tip">
               <div class="tip-dot"></div>
               <div>
                 <div class="tip-title">Líneas de detalle</div>
-                <div class="tip-text">Productos o servicios con cantidad y precio unitario</div>
+                <div class="tip-text">Datos extras de cada factura</div>
               </div>
             </div>
           </div>
@@ -164,12 +171,14 @@
               <div id="cItems" style="display:none">
                 <div class="sec">Líneas de detalle</div>
                 <table class="items-tbl">
-                  <thead><tr>
-                    <th>Descripción</th>
-                    <th style="text-align:center">Cant.</th>
-                    <th style="text-align:right">P.Unit</th>
-                    <th style="text-align:right">Total</th>
-                  </tr></thead>
+                  <thead>
+                    <tr>
+                      <th>Descripción</th>
+                      <th style="text-align:center">Cant.</th>
+                      <th style="text-align:right">P.Unit</th>
+                      <th style="text-align:right">Total</th>
+                    </tr>
+                  </thead>
                   <tbody id="iTbody"></tbody>
                 </table>
                 <div class="divider"></div>
@@ -235,9 +244,11 @@
               </tr>
             </thead>
             <tbody id="histBody">
-              <tr><td colspan="6">
-                <div class="tbl-empty">Cargando historial…</div>
-              </td></tr>
+              <tr>
+                <td colspan="6">
+                  <div class="tbl-empty">Cargando historial…</div>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -262,4 +273,5 @@
 
   <script src="/app.js"></script>
 </body>
+
 </html>

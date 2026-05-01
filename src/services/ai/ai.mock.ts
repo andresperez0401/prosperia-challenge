@@ -1,15 +1,8 @@
-import { AiProvider } from "./ai.interface.js";
+import { AiProvider, StructureInput } from "./ai.interface.js";
 import { ParsedReceipt } from "../../types/receipt.js";
 
 export class MockAi implements AiProvider {
-  async structure(input: {
-    rawText: string;
-    reconstructedText?: string;
-    partialFields?: Partial<ParsedReceipt>;
-    warnings?: string[];
-    totalCandidates?: { label: string; value: number }[];
-    labeledFields?: Record<string, string>;
-  }) {
+  async structure(input: StructureInput) {
     const rawText = input.reconstructedText || input.rawText;
     const totalMatch = rawText.match(/total\D*(\d+[\.,]\d{2})/i);
     const taxMatch = rawText.match(/(iva|itbms|impuesto)[^\d]*(\d+[\.,]\d{2})/i);

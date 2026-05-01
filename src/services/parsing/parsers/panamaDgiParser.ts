@@ -83,17 +83,29 @@ export class PanamaDgiParser implements ReceiptParser {
       }
     }
 
-    // Amount: "TOTAL PAGADO" is most explicit
-    const pagadoMatch = text.match(/TOTAL PAGADO\s*[:\|]?\s*([\d,\.]+)/i);
+    // Amount: "TOTAL PAGADO" is most explicit. Allow newline between label and value
+    // (handles OCR where amount lands on the next line).
+    const pagadoMatch = text.match(/TOTAL\s+PAGADO[\s:|]*([\d,\.]+)/i);
     if (pagadoMatch) {
       const v = normalizeAmount(pagadoMatch[1]);
       if (v !== null) fields.amount = v;
     } else {
-      // Last standalone "Total" line
+      // Last standalone "Total" line — must NOT be Total Neto / Total Impuesto / Total ITBMS
       const totalMatch = text.match(/^Total\s+([\d,\.]+)\s*$/im);
       if (totalMatch) {
         const v = normalizeAmount(totalMatch[1]);
         if (v !== null) fields.amount = v;
+      }
+    }
+    // If amount still unknown but TOTAL PAGADO is present, fall back to the
+    // amount on a "Forma de Pago" line (Tarjeta de Crédito / Efectivo / Transf).
+    if (fields.amount == null && /TOTAL\s+PAGADO/i.test(text)) {
+      const payLine = text.match(
+        /(?:Tarjeta de (?:Cr[eé]dito|D[eé]bito)|Efectivo|Transf\.?(?:\s*\/\s*Dep[oó]sito[^\n]*)?)\s*[:\|]?\s*([\d,\.]+)/i,
+      );
+      if (payLine) {
+        const v = normalizeAmount(payLine[1]);
+        if (v !== null && v > 0) fields.amount = v;
       }
     }
 
@@ -137,12 +149,17 @@ export class PanamaDgiParser implements ReceiptParser {
 
     if (Object.keys(extraFields).length > 0) fields.extraFields = extraFields;
 
-    // Validate: warn if amount doesn't reconcile
+    // Validate: warn if amount doesn't reconcile.
+    // If tax=0 (exento) and subtotal disagrees with amount, prefer amount (TOTAL PAGADO is the
+    // most reliable source; "Total Neto" can be OCR-corrupted in scanned receipts).
     if (fields.amount != null && fields.subtotalAmount != null && fields.taxAmount != null) {
       const expected = Math.round((fields.subtotalAmount + fields.taxAmount) * 100);
       const actual = Math.round(fields.amount * 100);
       if (Math.abs(expected - actual) > 5) {
         warnings.push(`Reconciliation: subtotal(${fields.subtotalAmount}) + tax(${fields.taxAmount}) ≠ total(${fields.amount})`);
+        if (fields.taxAmount === 0) {
+          fields.subtotalAmount = fields.amount;
+        }
       }
     }
 
