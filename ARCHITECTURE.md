@@ -315,7 +315,6 @@ src/
         normalizeDate.ts       → 20+ formatos → YYYY-MM-DD
         normalizeCurrency.ts
         normalizeIdentification.ts → RIF/RUC/NIT con formato regional
-      parser.test.ts           → 55 tests con vitest
 
     ai/
       index.ts                 → getAiProvider() según AI_PROVIDER
@@ -343,7 +342,81 @@ prisma/                        → schema + migrations + seed (cuentas iniciales
 public/                        → UI estática (HTML/CSS/JS)
 samples/                       → facturas de prueba
 uploads/                       → archivos subidos por Multer (se crea en runtime)
+
+tests/
+  parsing/                     → un archivo por función del parser (10 archivos, 55 tests)
+    parseAmount.test.ts
+    extractTotal.test.ts
+    extractSubtotal.test.ts
+    extractTax.test.ts
+    extractTaxPercentage.test.ts
+    extractDate.test.ts
+    extractVendorName.test.ts
+    extractVendorIds.test.ts
+    reconcile.test.ts
+    naiveParse.test.ts
 ```
+
+---
+
+## Tests
+
+### Dónde viven
+
+```
+tests/
+  parsing/
+    parseAmount.test.ts          → normalización de montos
+    extractTotal.test.ts         → extracción del total final
+    extractSubtotal.test.ts      → extracción del subtotal / base imponible
+    extractTax.test.ts           → extracción del monto de impuesto
+    extractTaxPercentage.test.ts → extracción del porcentaje de impuesto
+    extractDate.test.ts          → parseo de fechas en múltiples formatos
+    extractVendorName.test.ts    → detección del nombre del comercio
+    extractVendorIds.test.ts     → extracción de IDs fiscales (RUC, NIT, EIN)
+    reconcile.test.ts            → matemática de validación financiera
+    naiveParse.test.ts           → integración completa + factura real DGI Panamá
+```
+
+Cada archivo prueba una sola función. El framework es **Vitest**. No requiere configuración extra: lee TypeScript directamente y corre en Node.
+
+### Cómo correrlos
+
+```bash
+# Corre todos los tests una vez y muestra el resultado
+npm test
+
+# Modo watch: re-ejecuta automáticamente al guardar un archivo
+npm run test:watch
+```
+
+### Qué prueban
+
+El archivo tiene **55 tests** organizados en grupos (`describe`). Cada grupo cubre una función del parser:
+
+**`parseAmount`** — verifica que el normalizador de montos entiende los dos formatos más comunes en Latinoamérica: el europeo (punto como separador de miles, coma como decimal: `1.234,56`) y el americano (coma como miles, punto como decimal: `1,234.56`). También prueba enteros, decimales simples, strings vacíos y texto no numérico.
+
+**`extractTotal`** — confirma que la función encuentra el total en frases como `"total: $12.50"`, `"total a pagar: 100.00"` y `"grand total: 99.99"`, y devuelve `null` cuando no hay ninguna.
+
+**`extractSubtotal`** — prueba variantes de la etiqueta: `"subtotal: 50.00"`, `"base imponible: 80.00"`, `"neto: 90.00"`, y también el caso de fusión de columnas de OCR (`"subtotal500"` sin separador).
+
+**`extractTax`** — verifica que extrae el monto del impuesto en formatos de IVA, tax, IGV, y que no confunde el porcentaje con el monto cuando aparece `"iva 21% 105€"` (el porcentaje va antes, el monto va después).
+
+**`extractTaxPercentage`** — comprueba que lee el porcentaje de líneas como `"iva 12%"` o `"total con 19% de iva"`, y devuelve `null` si no hay porcentaje.
+
+**`extractDate`** — cubre más de 20 formatos de fecha: `YYYY-MM-DD`, `DD-MM-YYYY`, formato libre en español (`"el 5 de enero de 2024"`), y devuelve `null` cuando no hay fecha.
+
+**`extractVendorName`** — verifica que prefiere una línea en mayúsculas como nombre del comercio (comportamiento típico de tickets) y que, si no hay mayúsculas, devuelve la primera línea no ruidosa.
+
+**`extractVendorIds`** — extrae identificaciones fiscales: RUC Perú (`20123456789`), NIT Colombia (`900123456-1`), EIN USA (`12-3456789`), y devuelve array vacío si no encuentra nada.
+
+**`reconcile`** — prueba la matemática de validación financiera: si tenemos dos de los tres valores (`subtotal`, `tax`, `total`), el tercero se puede calcular. Cubre también casos de inconsistencia (cuando los números no cuadran) y que nunca derive un impuesto negativo.
+
+**`naiveParse` (integración)** — pasa un recibo completo de texto crudo y verifica que el parser genérico devuelva todos los campos correctamente: `amount`, `subtotalAmount`, `taxAmount`, `taxPercentage`, `date`, `invoiceNumber`, `vendorName` e `vendorIdentifications` en un solo paso.
+
+**Casos de factura real (`factura1`)** — usa el texto OCR real de `samples/factura1.jpg`, una factura electrónica de la DGI de Panamá (DERMA MEDICAL CENTER S.A., exenta de ITBMS). Verifica que `amount = 268`, `subtotal = 268`, `taxAmount = 0`, que el vendedor se extraiga como `"DERMA MEDICAL CENTER S.A."`, el cliente como `"george Nauyok"` y que el número de factura esté presente. Es el test más cercano a un escenario real de producción.
+
+**Casos de auditoría adicionales** — un grupo de tests derivados del análisis del sistema que cubren casos límite encontrados en facturas reales: formatos de IVA con porcentaje antes del monto, subtotals pegados al valor sin separador por error de OCR, y reconciliaciones con valores inconsistentes.
 
 ---
 
