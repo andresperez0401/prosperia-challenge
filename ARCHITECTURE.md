@@ -1,470 +1,358 @@
-# Mini-Prosperia — Cómo Funciona
+# Mini-Prosperia — Arquitectura
 
-## Índice
-1. [Stack tecnológico](#stack)
-2. [Flujo general](#flujo)
-3. [Detalles de cada etapa](#etapas)
-4. [Configuración del relay](#relay)
-5. [Estructura de carpetas](#carpetas)
-6. [Solucionar problemas](#problemas)
+Documento que cuenta, con lenguaje sencillo, cómo viaja un archivo desde que el usuario lo sube hasta que el sistema devuelve los datos estructurados. Si lees este documento de principio a fin, entiendes todo el pipeline.
 
-## Stack Tecnológico {#stack}
+---
 
-- **Backend:** Node.js 20 + TypeScript
-- **API:** Express + Multer para subir archivos
-- **DB:** PostgreSQL + Prisma ORM
-- **OCR:** Tesseract.js (lee inglés + español)
-- **Imagen:** Sharp (mejora fotos antes de OCR)
-- **PDF:** pdf-parse (texto), pdfjs-dist (convierte a imagen)
-- **IA:** OpenAI o DeepSeek (extrae datos, categoriza)
-- **Frontend:** HTML + CSS + JavaScript vanilla
+## Stack tecnológico
 
-## Flujo General {#flujo}
+- **Runtime:** Node.js 20 con TypeScript (ESM).
+- **API:** Express. Multer maneja la subida de archivos.
+- **Base de datos:** PostgreSQL accedida con Prisma.
+- **OCR:** Tesseract.js, configurado para leer inglés y español.
+- **Imagen:** Sharp para preprocesar antes del OCR.
+- **PDF:** `pdf-parse` saca texto directo si el PDF lo trae embebido; `pdfjs-dist` con `@napi-rs/canvas` rasteriza a imagen sin depender de binarios externos; `pdf2pic` (con GraphicsMagick + Ghostscript) queda como último recurso.
+- **IA:** OpenAI vía relay de Prosperia o DeepSeek directo. Hay un proveedor "Mock" como salvavidas.
+- **Frontend:** HTML, CSS y JavaScript planos en `public/`.
 
-```
-📁 Subes factura (PDF, JPG, PNG)
-        ↓
-🔄 Si es PDF → extrae texto o convierte a imagen
-        ↓
-🖼️ Mejora imagen (contraste, rotación, nitidez)
-        ↓
-📖 Lee texto con OCR (Tesseract)
-        ↓
-🧩 Reorganiza texto (detecta columnas, filas)
-        ↓
-🔎 Busca campos con reglas (total, fecha, vendor)
-        ↓
-🤖 IA rellena lo que falta (OpenAI o DeepSeek)
-        ↓
-🧮 Valida matemática (subtotal + IVA = total)
-        ↓
-💰 IA clasifica cuenta contable
-        ↓
-💾 Guarda en base de datos
-```
+Patrón estricto **Route → Controller → Service**. Las rutas solo declaran endpoints. Los controllers solo manejan request/response. Toda la lógica vive en los services, que no saben nada de Express.
 
-## Detalles de Cada Etapa {#etapas}
+---
 
-### 1️⃣ Extracción de PDF
+## El viaje completo de una factura
 
-Si subes un PDF, intenta 3 formas de sacar el contenido:
+Imagina que el usuario abre la web, elige una foto de una factura y aprieta "Subir". Esto es lo que pasa, en orden.
 
-1. **Texto digital** — Si el PDF tiene texto escrito (no escaneado), lo copia directo
-2. **Convertir a imagen** — Si no hay texto, renderiza cada página como imagen
-3. **Fallback externo** — Si nada funciona, usa Ghostscript (requiere instalarlo en Windows)
+### Paso 1 — Llega el archivo a la API
 
-Si el PDF tiene múltiples páginas, procesa cada una y junta el texto con un salto de línea.
+El navegador hace `POST /api/receipts` con el archivo en form-data. El primer punto de contacto es `routes/receipts.routes.ts`.
 
-### 2️⃣ Mejora de Imagen (Sharp) — Quién Elige Cuál
+Antes de pasar el control al controller, **Multer hace dos verificaciones**:
+- El archivo no puede pesar más de 10 MB (configurable con `MAX_UPLOAD_BYTES`).
+- El mime type tiene que ser PDF, PNG, JPEG o WebP. Cualquier otra cosa se rechaza ahí mismo.
 
-**Idea simple:** Una factura puede verse de 3 formas diferentes. No sabemos cuál es mejor, así que preparamos **3 versiones de la misma imagen** y dejamos que Tesseract las pruebe todas. Elige la que salga mejor.
+Si pasa, Multer guarda el archivo en `uploads/` con un nombre aleatorio y le da el path al controller.
 
-#### Las 3 Versiones
+### Paso 2 — El controller delega
 
-Teniendo una foto de una factura. Sharp hace:
+`controllers/receipts.controller.ts/createReceipt` solo hace tres cosas: revisa que efectivamente llegó el archivo, llama a `processReceipt(filePath, meta)` y devuelve el resultado con status 201. No conoce Prisma, ni la IA, ni el OCR. Simplemente HTTP in / HTTP out.
 
-**Versión 1: `normalized` — Versión "normal, limpia"**
-```
-Original → Enderezar (si está rotada) → Convertir a blanco y negro
-         → Estirar contraste (oscuro más oscuro, claro más claro)
-         → Suavizar (para no ver ruido)
-         → Resultado: foto limpia, lista para leer
-```
-- Cuándo sale bien: Cuando la foto es buena (buen escaneo, buena luz)
-- Ejemplo: Factura fotografiada con luz natural, buena calidad
+### Paso 3 — El service orquesta el pipeline
 
-**Versión 2: `threshold-160` — Versión "blanco y negro puro"**
-```
-Original → Enderezar → Blanco y negro → Estirar contraste
-         → Corte AFILADO: si pixel < 160 → totalmente negro, si >= 160 → totalmente blanco
-         → Resultado: solo blanco y negro, sin grises
-```
-- Cuándo sale bien: Cuando la factura es de mala calidad, borrosa
-- Ejemplo: Fotocopia vieja, impresión en gris
+`services/receipts.service.ts/processReceipt` es el cerebro. Llama a cada subservicio en orden y combina los resultados. Pasos del 3a al 3l explican cada parada.
 
-**Versión 3: `darkened` — Versión "contraste MÁXIMO"**
-```
-Original → Enderezar → Blanco y negro → Estirar contraste (agresivo)
-         → Corte MÁS AFILADO: si pixel < 190 → negro, si >= 190 → blanco
-         → Resultado: solo texto oscuro, fondo blanco, mucho contraste
-```
-- Cuándo sale bien: Cuando la foto es tomada por celular, tickets viejos, fotos borrosas
-- Ejemplo: Factura fotografiada con WhatsApp, ticket térmico viejo
+#### 3a — ¿Es un PDF?
 
-**Detalle: Si la foto tiene fondo oscuro**
-Sharp lo detecta (promedio < 110). Si ve eso → **invierte colores automático** (negro ↔ blanco).
-- Por qué: Si tienes documento blanco con letras negras sobre fondo negro, invierte para que sea negro sobre blanco
+Si el archivo es PDF, `services/pdf/pdfHandler.ts` lo intercepta antes de cualquier OCR. Prueba tres estrategias en cascada:
 
-**Límite de tamaño:**
-Si imagen > 2200px de ancho → la reduce (para no llenar RAM)
+1. **Texto embebido directo.** `pdf-parse` lee el PDF. Si el resultado tiene al menos 80 caracteres, contiene números y palabras, lo damos por bueno. Esto es lo que pasa con la mayoría de facturas electrónicas tipo DGI/SENIAT que vienen con texto vectorial — saltamos OCR completo, ahorramos varios segundos.
+2. **Rasterización pura JS.** Si no hay texto embebido (o es basura), convertimos cada página a PNG con `pdfjs-dist` + `@napi-rs/canvas`. No requiere binarios nativos, funciona en Windows sin instalar nada. La escala es 2.0× (~144 DPI), suficiente para OCR sin reventar la RAM.
+3. **`pdf2pic` como fallback.** Si la rasterización JS falla, intentamos con `pdf2pic`, que requiere GraphicsMagick y Ghostscript instalados. Es la opción más cara pero a veces salva PDFs muy raros.
 
-#### Cómo Tesseract Elige la Mejor
+Para PDFs multipágina, cada página corre OCR por separado y los textos se concatenan. La confianza global se promedia.
 
-**Flujo:**
-```
-Imagen original
-    ↓
-Crea 3 versiones (Sharp)
-    ↓
-Para CADA versión:
-  ├→ Intenta modo 4 (columnas lado a lado)
-  ├→ Intenta modo 6 (texto normal)
-  └→ Intenta modo 11 (texto disperso)
-    ↓ 9 intentos total (3 versiones × 3 modos)
-    ↓
-Calcula puntuación cada intento:
-  - Confianza OCR (qué tan seguro está)
-  - Cantidad de números encontrados
-  - Palabras clave (TOTAL, IVA, FECHA, etc.)
-  - Longitud de texto
-    ↓
-Elige el que tenga MÁS puntos
-```
+Si el archivo NO es PDF (es JPG, PNG, etc.), saltamos directo al paso siguiente con `pdfMethod = "image"`.
 
-**Ejemplo real:**
-```
-Factura fotografiada con celular, borrosa:
+#### 3b — Preparar la imagen para OCR
 
-normalized (modo 4) → "TtAL: 100" (confianza 50%, muy confundido) → Score 25
-normalized (modo 6) → "TOTAL: 100" (confianza 80%, buena lectura) → Score 40 ✓
-normalized (modo 11) → "TOTAL: 100" (confianza 70%) → Score 35
+`services/image/preprocessImage.ts` toma la imagen original y prepara hasta **tres versiones diferentes** del mismo archivo. La idea es: no sabemos cuál preprocesado le caerá mejor a Tesseract, así que probamos varias y nos quedamos con la que dé mejor lectura.
 
-threshold-160 (modo 4) → Error (blanco/negro puro no le sienta bien) → Score 5
-threshold-160 (modo 6) → "TOTAL: 100" (confianza 60%) → Score 30
-threshold-160 (modo 11) → "T0TAL: 100" (confundió O con 0) → Score 15
+Las tres variantes:
 
-darkened (modo 4) → "TOTAL: 100" (confianza 85%, contraste máximo le ayudó) → Score 50 ← GANADOR
-darkened (modo 6) → "TOTAL: 100" (confianza 80%) → Score 45
-darkened (modo 11) → "TOTAL: 100" (confianza 75%) → Score 40
+- **`normalized`** — escala de grises, normalización de niveles, sharpen suave. Es la opción "amigable" para escaneos limpios o fotos con buena luz.
+- **`threshold-N`** — binarización agresiva (todo se vuelve blanco o negro puro). Funciona bien con tickets térmicos, fotocopias borrosas o impresiones grises.
+- **`darkened-N`** — aumento fuerte de contraste (`linear 1.4× -20`), sharpen agresivo, threshold alto. Es para fotos de celular con tinta gastada, ambientes oscuros, recibos viejos.
 
-RESULTADO: Usa darkened (modo 4) porque tuvo puntuación más alta
-```
+Antes de cualquier transformación, Sharp calcula el gris promedio de la imagen. Si está debajo de 110 (imagen oscura, fondo negro con texto blanco) **invierte los colores automáticamente**, así Tesseract siempre ve texto oscuro sobre fondo claro.
 
-**Punto clave:** No sabemos de antemano cuál será mejor, así que probamos todas.
+También limita el ancho a 2200px para acotar memoria/CPU.
 
-### 3️⃣ OCR — Lee el Texto
+#### 3c — Tesseract lee cada variante
 
-Tesseract intenta leer cada una de las 3 imágenes mejoradas usando 3 modos diferentes:
+`services/ocr/ocr.tesseract.ts` recibe las variantes y para cada una prueba **tres modos de segmentación de página (PSM)** en este orden:
 
-- **Modo 4** — Para facturas con dos columnas lado a lado
-- **Modo 6** — Para texto corrido normal  
-- **Modo 11** — Para tickets pequeños con texto disperso
+1. **PSM 6 (single block)** — para facturas con texto denso bien estructurado.
+2. **PSM 4 (single column)** — para layouts con dos columnas verticales (etiqueta + valor a la derecha).
+3. **PSM 11 (sparse text)** — para tickets pequeños con texto disperso sobre mucho espacio en blanco.
 
-Elige automáticamente la mejor combinación según:
-- Confianza de OCR
-- Cantidad de números detectados
-- Palabras clave encontradas (TOTAL, IVA, RIF, etc.)
-- Longitud del texto
+Cada intento recibe un `compositeScore` que pondera: confianza promedio del OCR (×10), cantidad de montos detectados (×5), palabras clave fiscales (`TOTAL`, `IVA`, `RIF`, `RUC`...) (×10), tax IDs (×10) y un bonus por longitud de texto (máx 10).
 
-Configuración: Lee inglés + español, preserva espacios, usa 300 DPI para claridad.
+Hay **early-exit en dos niveles** para no quemar tiempo cuando ya tenemos algo bueno:
+- Dentro de una variante: si el primer PSM da score ≥ 40 con confianza ≥ 0.60, no probamos los demás PSMs.
+- Entre variantes: si una variante completa da score ≥ 60 con confianza ≥ 0.65, no procesamos las restantes.
 
-### 4️⃣ Reorganiza el Texto
+El worker de Tesseract es **singleton**: arrancarlo cuesta ~1 segundo, así que se reusa entre requests. Al apagar el servidor con `SIGTERM/SIGINT` se cierra limpio.
 
-Tesseract devuelve la posición de cada palabra en la imagen. Esta etapa:
+#### 3d — La materia prima del OCR
 
-1. Agrupa palabras que están juntas verticalmente → reconstruye líneas
-2. Detecta columnas (espacios grandes entre palabras)
-3. Extrae pares clave-valor (ej: "TOTAL: 15.212,97")
-4. Si hay tabla de items, los extrae ordenados por fila
+Tesseract no devuelve solo texto plano; devuelve un objeto rico:
 
-Lo hace el reconstructLaayout, agrupando palabras por prioridad vertical, ordenando de izquierd a derecha y detectando alineaciones horizontales. Basicamente toma la data matemática (coordenadas) que da Tesseract y reconstruye el documento como si fuera una tabla estructurada.
-
-Resultado: Texto que respeta la estructura visual de la factura original, no un bloque confuso.
-
-### 5️⃣ Parsers — Busca Campos con Reglas
-
-Sistema en capas: **Parser Genérico + Parsers Especializados**
-
-#### Cómo Funciona: Quién Llama Qué y Cuándo
-
-**Imagina que eres un robot leyendo una factura.**
-
-Alguien te da un texto y dice: "Extrae los campos: monto, vendor, fecha, etc."
-
-```
-Tú ejecutas esto mentalmente:
-
-PASO 1: Llamas GenericParser
-"Voy a buscar patrones universales (TOTAL, SUBTOTAL, VENDOR, FECHA)"
-Resultado: algunos campos rellenos, otros NULL
-{
-  amount: 100,
-  vendor: "BALU",
-  currency: null,       ← falta
-  ...
-}
-
-PASO 2: ¿Detectas Venezuela?
-Buscas en el texto: "SENIAT", "RIF", "Bs"
-Si ves alguno → "Esta es factura VENEZOLANA"
-
-PASO 3: ¿Es Venezuela?
-Si SÍ → Llamas SeniatVenezuelaParser
-       "Tengo reglas especiales para Venezuela"
-Si NO → Terminas aquí
-
-PASO 4: SeniatVenezuelaParser agrega/corrige
-Lee lo que GenericParser encontró
-Agrega: currency: "VES" (porque vio "RIF")
-Corrige: vendor si está mal
-Resultado: objeto completo
-```
-
-**Flujo en código:**
-
-```javascript
-function parseReceipt(texto) {
-  // PASO 1: Siempre GenericParser
-  let resultado = genericParser(texto);
-  
-  // PASO 2: ¿Es Venezuela?
-  let esVenezuela = false;
-  if (texto.includes("SENIAT")) esVenezuela = true;  // 90% seguro
-  if (texto.includes("RIF")) esVenezuela = true;     // 85% seguro
-  if (texto.includes("Bs")) esVenezuela = true;      // 70% seguro
-  
-  // PASO 3: Si es Venezuela, correr parser especializado
-  if (esVenezuela) {
-    resultado = seniatParser(resultado, texto);
-  }
-  
-  // PASO 4: Devolver resultado
-  return resultado;
+```typescript
+OcrResult {
+  text: string;              // texto unido por saltos de línea
+  confidence: number;        // 0..1, promedio de la página
+  words: OcrWord[];          // cada palabra con bbox {x0,y0,x1,y1} + confidence individual
+  lines: OcrLine[];          // líneas con bbox + words[] anidadas
+  selectedVariant?: string;  // qué variante ganó (normalized | threshold-160 | darkened-190)
+  selectedPsm?: number;      // qué PSM ganó (4, 6 u 11)
 }
 ```
 
-**Punto clave:** parseReceipt() es un orquestador. Ella decide qué parser ejecutar según detecte Venezuela o no.
+Lo crítico no es `text`, son los `bbox` por palabra. Con ellos podemos reconstruir la estructura visual de la factura aunque Tesseract haya devuelto las líneas en orden raro.
 
-#### Parser Genérico (`GenericParser`)
+#### 3e — Reconstruir el layout
 
-Lee el texto línea por línea buscando patrones universales.
+`services/ocr/reconstructLayout.ts` traduce las posiciones de Tesseract en texto bien alineado. Sin este paso, "TOTAL" en una línea y "15,212.97" en la siguiente quedarían separados, y los regex no harían match.
 
-**Proceso del GenericParser:**
+Hace tres cosas:
 
-Imagina que tienes este texto:
+1. **Agrupa palabras por fila vertical.** Si Tesseract ya devolvió `lines[]`, las usa directamente ordenadas por `y0`. Si no, agrupa palabras sueltas: dos palabras pertenecen a la misma fila si su diferencia de `y0` es menor al 60% de la altura promedio de palabra.
+2. **Ordena cada fila por X.** Dentro de la fila, izquierda a derecha por `x0`.
+3. **Inserta espacios proporcionales al gap horizontal.** Mide la distancia entre el final de una palabra y el comienzo de la siguiente:
+   - Gap muy grande (≥ 6 anchos de carácter) → 4 espacios. Probable separador de columnas: `TOTAL    15,212.97`.
+   - Gap mediano (2–5) → 2 espacios.
+   - Gap chico → 1 espacio normal.
+
+Como bonus, intenta extraer `tableRows`: pares `label: value` con dos puntos, o `label    value` separados por 4+ espacios. Esto ayuda mucho a la IA después.
+
+Si el texto vino de un PDF con texto embebido (sin bbox), simplemente hace `split("\n")` y `tableRows` queda vacío.
+
+#### 3f — Reglas determinísticas extraen lo obvio
+
+Antes de molestar a la IA, `services/parsing/parseReceipt.ts` corre regex sobre el texto reconstruido. Esto es cero costo y atrapa los campos que se extraen sin ambigüedad.
+
+Siempre arranca el **GenericReceiptParser** (basado en `parser.ts/naiveParse`) que busca: total, subtotal, IVA, vendor, fecha, número de factura, identificaciones (RIF/RUC/NIT), items, método de pago.
+
+Después prueba **parsers especializados por país**: hoy hay `PanamaDgiParser` (Panamá DGI) y `SeniatVenezuelaParser` (Venezuela SENIAT). Cada uno se autoevalúa con `detect(ctx)` devolviendo un score 0..1 según señales como "SENIAT", "DGI", "RIF", "Bs". El de mayor score que pase 0.5 superpone sus campos sobre los del genérico (solo donde no son `null`).
+
+El resultado es `{ fields, parserName, warnings }`.
+
+#### 3g — Construir candidatos para la IA
+
+El service no le manda solo el texto crudo a la IA; le manda **listas exhaustivas de candidatos** ya pre-procesados. Esto reduce alucinaciones y ahorra tokens. Cada función vive en `parser.ts`:
+
+| Función | Qué devuelve | Para qué sirve |
+|---|---|---|
+| `extractAllTotalCandidates` | Lista de líneas con keyword tipo `TOTAL/SUBTOTAL/TTL/IMPORTE/MONTO`, cada una con un `role` (`final`/`subtotal`/`tax`/`line`/`ambiguous`) | La IA elige el `role:"final"` correcto sin confundir con subtotal |
+| `extractAllSubtotalCandidates` | Líneas tipo "Subtotal", "Base imponible", "Net amount" | Para que la IA confirme el subtotal |
+| `extractAllTaxCandidates` | Líneas con IVA/ITBMS/VAT/IGV/Impuesto, ya filtrando porcentajes solos | Monto del impuesto |
+| `extractRawLabeledFields` | Diccionario `{Emisor, Cliente, RUC, RIF, Fecha de Emisión, Dirección, ...}` | Pares clave-valor literales del texto |
+| `extractVendorCandidates` | Top 10 líneas plausibles como nombre del comercio | Filtra encabezados, organismos fiscales, tipos de documento ("Factura Electrónica", "Comprobante", etc.) |
+| `extractCustomerCandidates` | Solo lo que aparece tras marcadores tipo `Cliente:`, `Receptor:`, `Bill To:` | Distingue cliente de vendedor |
+| `extractClassifiedIdentifications` | Lista `[{value, section: "vendor"\|"customer"\|"unknown", label}]` | Cada RIF/RUC/NIT etiquetado por la sección donde apareció |
+
+Las regex que reconocen palabras clave (`TOTAL_TOKEN`, `TAX_TOKEN`) son **tolerantes a confusiones de OCR**: aceptan "T0TAL", "T0T4L", "lMPORTE", "1VA", "lVA" para que líneas mal leídas igual entren como candidatos. La IA decide después qué role tienen.
+
+#### 3h — Cargar las cuentas contables
+
+`prisma.account.findMany()` saca todas las cuentas activas del catálogo. Esta consulta se **cachea en memoria 60 segundos** para no golpear la BD en cada subida.
+
+Las cuentas se serializan compactas como `"id|nombre"` y van en el prompt de la IA para que pueda elegir una directamente.
+
+#### 3i — Una sola llamada a la IA
+
+`services/ai/index.ts/getAiProvider()` decide qué proveedor usar según `AI_PROVIDER`:
+- `openai` → OpenAI vía relay Prosperia (modelo `gpt-4o-mini`)
+- `deepseek` → DeepSeek API directa
+- `auto` → cadena `OpenAiProvider → DeepSeekProvider → MockAi` (`FallbackAiProvider`)
+- `mock` → solo regex local (para desarrollo)
+
+`ai.structure(input)` hace **una única llamada** que estructura los campos faltantes Y categoriza al mismo tiempo. Antes era una llamada por cosa; consolidar ahorra tokens y latencia.
+
+El prompt está en `services/ai/prompt.ts`. Es compacto (~600 tokens), en español, con reglas anti-alucinación: "sin evidencia → null", "no uses tipos de documento como vendorName", "amount = TOTAL FINAL no subtotal", etc.
+
+Lo que la IA recibe en el `user` message (JSON serializado):
+
 ```
-BALU
-FACTURA 123
-FECHA: 04/11/2025
-
-Producto A    100
-Producto B    200
-
-SUBTOTAL: 300
-IVA (16%): 48
-TOTAL: 348
-```
-
-GenericParser hace esto:
-
-1. **Busca TOTAL**
-   - Mira cada línea
-   - Si ve "TOTAL" → "ACA ESTÁ"
-   - Captura número después: `348`
-   - Toma ese número
-
-2. **Busca SUBTOTAL**
-   - Mira cada línea
-   - Si ve "SUBTOTAL" → captura `300`
-
-3. **Busca IVA (el monto, no el %)**
-   - Busca líneas con "IVA", "IMPUESTO", "TAX"
-   - Pero evita líneas que digan "16%" (esos son porcentajes)
-   - Toma el número: `48`
-
-4. **Busca IVA % (el porcentaje)**
-   - Busca patrones "16%", "IVA 21%"
-   - Si encuentra → `16`
-
-5. **Busca VENDOR (nombre de la tienda)**
-   - Toma las primeras 8 líneas
-   - Salta líneas que son solo: "SENIAT", "FECHA", números puros
-   - Toma la primera línea "útil" → `BALU`
-
-6. **Busca NÚMERO DE FACTURA**
-   - Busca "FACTURA NRO", "INVOICE #"
-   - Captura número después → `123`
-   - PERO: rechaza si la palabra después es "FECHA" (evita confundir)
-
-7. **Busca FECHA**
-   - Intenta 20+ formatos diferentes
-   - "04/11/2025", "2025-11-04", "4 nov 2025", etc.
-   - Convierte a formato estándar: `2025-11-04`
-
-8. **Busca IDENTIFICACIONES (RIF, NIT, etc.)**
-   - Busca por patrón: "J-40208563-5" (RIF), "1234567-8" (NIT), etc.
-   - Detecta automáticamente qué tipo es
-   - Devuelve lista
-
-9. **Busca ITEMS (tabla de productos)**
-   - Si hay tabla: descripción + cantidad + precio
-   - Extrae fila por fila
-
-10. **Busca MÉTODO DE PAGO**
-    - Busca: "tarjeta", "efectivo", "transferencia"
-
-**Resultado del GenericParser:**
-```javascript
-{
-  amount: 348,
-  subtotal: 300,
-  taxAmount: 48,
-  taxPercentage: 16,
-  vendor: "BALU",
-  invoiceNumber: "123",
-  date: "2025-11-04",
-  currency: null,         // NO encontró, IA lo agrega
-  vendorIdentifications: [],
-  items: [...]
-}
+rawText                  ← texto OCR plano (capado a 8000 chars)
+reconstructedText        ← versión alineada de 3e (si difiere del raw)
+partialFields            ← lo que ya encontraron las reglas (hints)
+warnings                 ← incidencias del parser
+totalCandidates[]        ← con role hint
+subtotalCandidates[]
+taxCandidates[]
+labeledFields            ← {Emisor:..., Cliente:..., RUC:...}
+vendorCandidates[]
+customerCandidates[]
+identifications[]        ← cada ID con sección {vendor|customer|unknown}
+tableRows[]              ← pares label:value alineados por bbox (muy confiables)
+accounts                 ← lista compacta "id|nombre" para categorizar
 ```
 
-#### Parser Especializado — Venezuela (`SeniatVenezuelaParser`)
+La IA devuelve un JSON con todos los campos + `recommendedAccountId`. `parseStructureJson()` valida la respuesta:
+- Verifica que el `accountId` exista realmente en la BD. Si no, intenta fuzzy match por nombre. Si nada, queda `null`.
+- Coerciona tipos (números, strings, arrays).
+- Solo acepta currencies de la lista soportada.
 
-**Se activa SOLO si parseReceipt() detecta Venezuela.**
+**Si la IA falla en `auto`:** `FallbackAiProvider` captura el error, intenta el siguiente provider de la cadena, y agrupa todos los warnings en `_aiWarnings`. Estos warnings se inyectan en `extraFields["Advertencias IA"]` para que la UI los muestre.
 
-¿Cómo sabe si es Venezuela?
-- Si ve "SENIAT" en el texto → 90% confianza
-- Si ve "RIF" en el texto → 85% confianza
-- Si ve "Bs" o "VES" en el texto → 70% confianza
+#### 3j — Combinar reglas con IA (merge)
 
-Se aplico esta variante debido a que alguna de las facturas de prueba encontradas estaban relacionadas con Venezuela. Pero la idea es que se puedan implementar mas adaptadores a la interfaz: ReceiptParser
+Tenemos dos fuentes: lo que extrajeron las reglas (`base`) y lo que devolvió la IA (`aiStruct`). Hay que combinarlas con criterio:
 
-Si alguna de estas es cierta → ejecuta SeniatVenezuelaParser
+- **Campos financieros** (`amount`, `subtotalAmount`, `taxAmount`, `taxPercentage`): la IA siempre gana. Vio todos los candidatos con su role, tiene mejor contexto.
+- **Identidad** (`vendorName`, `customerName`): la IA solo corrige si la regla dejó vacío o devolvió un valor "feo" — códigos de terminal tipo `DC001`, `POS-1`, `Comprobante`, `Factura de Operacion`, `DGI`. Si la regla devolvió algo limpio, se respeta.
+- **IDs** (`vendorIdentifications`, `customerIdentifications`): la IA llena solo si la regla devolvió array vacío.
+- **Resto**: la IA llena lo que la regla dejó `null`.
 
-**Qué hace el SeniatVenezuelaParser:**
+Después del merge se hace una **limpieza de nombres**: si `vendorName` o `customerName` tienen 4+ espacios consecutivos, se corta ahí. Esa secuencia de espacios viene del paso 3e como separador de columnas, así que cualquier cosa que aparezca después es ruido pegado de otra columna.
 
-Lee lo que GenericParser encontró y lo corrige/agrega para facturas venezolanas.
+#### 3k — Matemática de validación
 
-**Ejemplo completo de flow:**
+`services/parsing/computeFields.ts` rellena huecos financieros con aritmética: `subtotal + taxAmount = amount`. Solo rellena lo que está en `null`, nunca pisa valores existentes. Tolerancia de 6 centavos para errores de redondeo. Si tenemos dos de los tres, calcula el tercero. Si tenemos amount y taxPercentage, infiere subtotal y tax.
 
-Texto original:
-```
-BALÚ
-RIF: J 40208563 5
-FACTURA 123
-TOTAL: 348 Bs
-```
+#### 3l — Categoría: red de seguridad
 
-GenericParser encuentra:
-```javascript
-{
-  vendor: "BALÚ",
-  invoiceNumber: "123",
-  amount: 348,
-  currency: null         // No encontró moneda
-}
-```
+Si la IA no devolvió categoría (poco probable, pero pasa), `services/parsing/categorizer.ts` busca por keywords en el texto: `uber → Transporte`, `restaurant → Alimentación`, `aws → Software/Suscripciones`, etc. Si tampoco matchea, último recurso: la primera cuenta de tipo `expense` que exista. Mejor algo que nada.
 
-SeniatVenezuelaParser ejecuta:
-```javascript
-// Detectó "RIF" y "Bs" → es Venezuela
-{
-  vendor: "BALÚ",        // Sin cambios (ya estaba bien)
-  currency: "VES",       // AGREGADO (por "RIF" y "Bs")
-  rif: "J-40208563-5"    // AGREGADO Y NORMALIZADO
-  // Otros campos sin cambios
-}
-```
+#### 3m — Detección de moneda
 
-Resultado final:
-```javascript
-{
-  vendor: "BALÚ",
-  invoiceNumber: "123",
-  amount: 348,
-  currency: "VES",
-  rif: "J-40208563-5"
-}
-```
+`services/parsing/detect.currency.ts` aplica patrones explícitos sobre el texto:
+- `Bs` o `Bs.` → VES (Venezuela)
+- `ITBMS`, `B/.`, `Panamá` → PAB
+- `€` → EUR
+- `S/.` → PEN
+- `RFC` o `México` → MXN
+- etc.
 
-### 6️⃣ Normalización de Datos
+Si nada matchea, usa lo que dijo la IA. Si tampoco, default `USD`.
 
-Convierte texto "sucio" en datos limpios:
+#### 3n — Persistir en BD
 
-- **Montos:** "15.212,97" → 15212.97 (maneja EU, US, y espacios)
-  - EU: punto=miles, coma=decimal
-  - US: coma=miles, punto=decimal
-  - Auto-detecta por contexto (cuántos dígitos después del separador)
+`prisma.receipt.create()` guarda:
+- Metadatos del archivo (`originalName`, `mimeType`, `size`, `storagePath`).
+- `rawText` en columna propia (preservado intacto, sin truncar).
+- `json` con todos los campos estructurados + un objeto `pipeline` que registra:
+  - `pdfMethod`: `"direct"` (PDF con texto), `"ocr"` (PDF rasterizado) o `"image"` (no era PDF).
+  - `parserUsed`: qué parser/parsers corrieron, ej. `"GenericReceiptParser + PanamaDgiParser"`.
+- `ocrProvider` y `aiProvider` reales — no `"auto"`, sino la clase concreta que efectivamente respondió: `OpenAiProvider`, `DeepSeekProvider`, `MockAi` o `None (All Failed)`.
 
-- **Fechas:** "04/11/2025" → "2025-11-04" (soporta 20+ formatos)
-  - DD/MM/YYYY, YYYY-MM-DD, "4 nov 2025", "4 de noviembre 2025"
-  - Valida año 2000-2030 (evita falsos positivos)
+### Paso 4 — Respuesta al usuario
 
-- **Monedas:** "Bs" → "VES", "€" → "EUR", "$" → "USD"
-  - Bs/Bs. siempre → VES (bolívares venezolanos)
-  - $ + contexto regional → USD, COP, etc.
+El controller serializa el registro creado y lo devuelve con HTTP 201. El frontend lo recibe y lo muestra.
 
-- **IDs:** "J 40208563 5" → "J-40208563-5" (RIF, NIT, RUC, CIF)
-  - Detecta tipo por patrón (J-NNN = RIF Venezuela)
-  - Limpia espacios/guiones
-  - Formato estándar por país
+---
 
-### 7️⃣ Validación Matemática
+## Otros endpoints
 
-Si tienes 2 de estos 3 valores, calcula el tercero:
-- Subtotal + IVA monto = Total
-- Total + IVA % = Subtotal
-- Etc.
+| Método | Ruta | Qué hace |
+|---|---|---|
+| `GET` | `/api/receipts` | Lista las últimas 100 facturas. Va por el service que cachea nada (la BD ya es rápida). |
+| `GET` | `/api/receipts/:id` | Detalle por ID. 404 si no existe. |
+| `POST` | `/api/receipts/:id/reparse` | Vuelve a procesar el archivo original con el pipeline actual. Útil cuando se mejora un parser y quieres re-evaluar facturas viejas. Lee de `storagePath`. |
+| `GET` | `/health` | Liveness simple. |
+| `GET` | `/api/relay/ping` | Test de conectividad al relay OpenAI. Devuelve latencia y modelo. |
 
-Solo rellena campos vacíos. Nunca sobrescribe lo que ya encontró.
+---
 
-Tolerancia: Permite diferencia de hasta 6 centavos (errores de redondeo).
+## Variables de entorno
 
-### 8️⃣ IA — Rellena y Clasifica
+```env
+DATABASE_URL=postgresql://...
 
-**Etapa 1 — Estructura (OpenAI o DeepSeek):**
-- Lee el texto + lo que ya encontraron las reglas
-- Rellena campos vacíos (sin sobrescribir los que ya existen)
-- Maneja casos especiales (Venezuela, formatos raros)
-
-**Etapa 2 — Categorización (Contabilidad):**
-- Lee el nombre del vendor + items comprados
-- Asigna a una categoría contable de la base de datos
-- Si falla, busca por keywords (ej: "uber" → Transporte, "restauran" → Alimentación)
-
-Usa OpenAI `gpt-4o-mini` o DeepSeek como fallback. Si ambas fallan, usa heurística local pero es menos precisa.
-
-### 9️⃣ Guardar en Base de Datos
-
-Se almacena:
-- Todos los campos extraídos (monto, fecha, vendor, items, etc.)
-- ID de categoría contable
-- Metadatos del procesamiento (qué provider se usó, qué método OCR, etc.)
-
-## Configuración del Relay {#relay}
-
-**Variables de entorno (`.env`):**
-```bash
-AI_PROVIDER=auto                 # auto, openai, deepseek, o mock
-DEEPSEEK_API_KEY=sk-...          # Solo si usas deepseek
+AI_PROVIDER=auto                 # auto | openai | deepseek | mock
 OPENAI_BASE_URL=https://prosperia-openai-relay-production.up.railway.app
-PROSPERIA_TOKEN=tu-nombre        # Token personal
+PROSPERIA_TOKEN=<token>
+DEEPSEEK_API_KEY=sk-...
+
+OCR_PROVIDER=tesseract           # tesseract | mock
+TESSDATA_DIR=.                   # carpeta con eng.traineddata + spa.traineddata
+
+PORT=3010
+MAX_UPLOAD_BYTES=10485760        # opcional, default 10MB
 ```
 
-Recomendado: `AI_PROVIDER=auto` (intenta OpenAI, luego DeepSeek, fallback a reglas locales)
+---
 
-## Estructura de Carpetas {#carpetas}
+## Estructura del repo
 
 ```
-public/                   → Frontend (HTML, CSS, JS)
 src/
-  ├── server.ts           → Arranque del servidor
-  ├── controllers/        → Maneja peticiones HTTP
-  ├── routes/             → Define URLs
-  ├── services/
-  │   ├── pdf/            → Extrae texto/imagen de PDF
-  │   ├── image/          → Mejora imágenes con Sharp
-  │   ├── ocr/            → OCR con Tesseract
-  │   ├── parsing/        → Busca campos (regex + IA)
-  │   │   ├── parsers/    → Especialistas por región
-  │   │   └── normalizers/ → Limpia datos
-  │   └── ai/             → OpenAI, DeepSeek, Mock
-  └── types/              → TypeScript interfaces
-prisma/                   → Base de datos schema
-samples/                  → PDFs de prueba
-uploads/                  → Archivos subidos
+  app.ts                       → bootstrap Express, monta routers, error handler global
+  server.ts                    → listen() + shutdown limpio (SIGTERM/SIGINT cierra Tesseract)
+
+  routes/                      → solo endpoints + middlewares (Multer, etc.)
+    receipts.routes.ts
+    transactions.routes.ts
+    relay.routes.ts
+
+  controllers/                 → maneja req/res, sin lógica de negocio
+    receipts.controller.ts
+    transactions.controller.ts
+    relay.controller.ts
+
+  services/
+    receipts.service.ts        → orquesta el pipeline completo (processReceipt + list/get/reparse)
+    relay.service.ts           → ping al relay OpenAI
+
+    pdf/
+      pdfHandler.ts            → estrategia en cascada: pdf-parse → pdfjs-dist → pdf2pic
+      pdfRasterize.ts          → render página a PNG con pdfjs-dist + canvas
+
+    image/
+      preprocessImage.ts       → 3 variantes Sharp (normalized, threshold, darkened)
+
+    ocr/
+      ocr.tesseract.ts         → Tesseract worker singleton, 3 PSMs, score-based pick
+      reconstructLayout.ts     → bbox → texto alineado por columnas + tableRows
+      ocr.interface.ts         → contrato OcrProvider
+      ocr.mock.ts              → placeholder para tests
+      index.ts                 → getOcrProvider()
+
+    parsing/
+      parseReceipt.ts          → orquestador de parsers (genérico + especializados)
+      parser.ts                → naiveParse + extractores de candidatos
+      computeFields.ts         → matemática subtotal+tax≈total
+      categorizer.ts           → keywords → cuenta contable (fallback)
+      detect.currency.ts       → detección de moneda por patrones
+      parsers/
+        genericReceiptParser.ts
+        seniatVenezuelaParser.ts
+        panamaDgiParser.ts
+        parserInterface.ts
+      normalizers/
+        normalizeAmount.ts     → "1.234,56" / "1,234.56" → 1234.56
+        normalizeDate.ts       → 20+ formatos → YYYY-MM-DD
+        normalizeCurrency.ts
+        normalizeIdentification.ts → RIF/RUC/NIT con formato regional
+      parser.test.ts           → 55 tests con vitest
+
+    ai/
+      index.ts                 → getAiProvider() según AI_PROVIDER
+      ai.interface.ts          → contrato AiProvider + StructureInput + AiStructureResult
+      ai.openai.ts             → OpenAiProvider (relay Prosperia, json_object mode)
+      ai.deepseek.ts           → DeepSeekProvider (API directa)
+      ai.mock.ts               → MockAi (regex, fallback final)
+      ai.fallback.ts           → FallbackAiProvider (cadena)
+      prompt.ts                → STRUCTURE_SYSTEM_PROMPT + buildStructurePrompt + parseStructureJson
+
+  config/
+    env.ts                     → carga .env
+    logger.ts                  → pino logger
+
+  db/
+    client.ts                  → instancia única de PrismaClient (compartida)
+
+  types/
+    receipt.ts                 → ParsedReceipt, OcrResult, OcrWord, OcrLine, Item
+
+  utils/
+    errors.ts                  → HttpError
+
+prisma/                        → schema + migrations + seed (cuentas iniciales)
+public/                        → UI estática (HTML/CSS/JS)
+samples/                       → facturas de prueba
+uploads/                       → archivos subidos por Multer (se crea en runtime)
 ```
 
+---
 
+## Qué pasa cuando algo falla
 
+- **Multer rechaza el archivo** (mime inválido o > 10MB) → el error pasa al middleware global de Express y devuelve 500. Idealmente subir esto a 400 con un mensaje claro.
+- **Tesseract falla en una variante** → se loguea warning y se prueba la siguiente. Si fallan todas, devuelve `{ text: "", confidence: 0 }`.
+- **PDF imposible de leer** → todas las estrategias fallan → `pdfToImages` lanza error → el controller responde 500.
+- **IA primaria falla en modo `auto`** → cae a la siguiente. Los errores se acumulan en `_aiWarnings` que terminan visibles en `extraFields["Advertencias IA"]`.
+- **IA devuelve JSON inválido** → `parseStructureJson` retorna `{}` y el merge cae a lo que tenían las reglas.
+- **IA inventa un `accountId`** → la validación contra la BD lo descarta y queda `null`. Categoría cae a `categorize()` por keywords y, si tampoco, a la primera cuenta de tipo expense.
+- **Tesseract worker zombie** → al cerrar el server con SIGTERM/SIGINT, `shutdownTesseract()` llama `terminate()` antes de salir.

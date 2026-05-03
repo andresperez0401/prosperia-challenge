@@ -11,11 +11,17 @@ export interface PreprocessResult {
 
 /**
  * Preprocess an image for OCR using Sharp.
- * Returns 2 variants — Tesseract picks the higher-scoring one.
+ * Returns up to 3 variants — Tesseract picks the higher-scoring one.
+ * Tesseract has an early-exit when a variant scores high enough, so the
+ * later variants are only run when the cheaper ones fail to produce
+ * good results.
  *
  * Variants:
  *  - normalized:    grayscale + normalize + sharpen + upscale  → photos / clean scans
- *  - threshold-180: median + binarization                       → thermal tickets / faint text
+ *  - threshold-N:   median + binarization                      → thermal tickets / faint text
+ *  - darkened:      aggressive contrast + high threshold       → low-quality phone photos,
+ *                                                                whatsapp screenshots, faded
+ *                                                                thermal receipts
  */
 export async function preprocessImage(
   filePath: string,
@@ -92,6 +98,22 @@ export async function preprocessImage(
       .png({ compressionLevel: 6 })
       .toFile(thresholdPath);
     results.push({ imagePath: thresholdPath, mimeType: "image/png", variant: `threshold-${threshValue}` });
+
+    // Variant 3: darkened — aggressive sharpen + high threshold.
+    // Catches phone photos with faded ink / low ambient light where the other
+    // two variants merge characters or drop strokes. Heavy but cheap relative
+    // to a wrong extraction.
+    const darkThresh = shouldInvert ? 170 : 190;
+    const darkenedPath = path.join(dir, `${base}-ocr-darkened.png`);
+    await basePipe()
+      .normalize()
+      .linear(1.4, -20) // contrast boost: out = 1.4 * in - 20
+      .sharpen({ sigma: 2.0 })
+      .threshold(darkThresh)
+      .resize({ width: targetWidth, withoutEnlargement: false })
+      .png({ compressionLevel: 6 })
+      .toFile(darkenedPath);
+    results.push({ imagePath: darkenedPath, mimeType: "image/png", variant: `darkened-${darkThresh}` });
 
   } catch (err) {
     logger.error({

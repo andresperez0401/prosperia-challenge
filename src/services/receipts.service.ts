@@ -18,7 +18,44 @@ import { reconstructLayout } from "./ocr/reconstructLayout.js";
 import { computeFields } from "./parsing/computeFields.js";
 import { logger } from "../config/logger.js";
 import { ParsedReceipt } from "../types/receipt.js";
-import fs from "fs";
+import { HttpError } from "../utils/errors.js";
+
+// In-memory cache for accounts list — invalidated every 60s.
+// Accounts rarely change at runtime; avoids hitting the DB on every receipt.
+const ACCOUNTS_TTL_MS = 60_000;
+let accountsCache: { data: { id: number; name: string; type: string }[]; expiresAt: number } | null = null;
+
+async function getAccounts() {
+  const now = Date.now();
+  if (accountsCache && accountsCache.expiresAt > now) return accountsCache.data;
+  const data = await prisma.account
+    .findMany({ select: { id: true, name: true, type: true } })
+    .catch(() => [] as { id: number; name: string; type: string }[]);
+  accountsCache = { data, expiresAt: now + ACCOUNTS_TTL_MS };
+  return data;
+}
+
+export async function listReceiptsService(limit = 100) {
+  return prisma.receipt.findMany({
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+export async function getReceiptByIdService(id: string) {
+  const r = await prisma.receipt.findUnique({ where: { id } });
+  if (!r) throw new HttpError(404, "Not found");
+  return r;
+}
+
+export async function reparseReceiptService(id: string) {
+  const r = await getReceiptByIdService(id);
+  return processReceipt(r.storagePath, {
+    originalName: r.originalName,
+    mimeType: r.mimeType,
+    size: r.size,
+  });
+}
 
 export async function processReceipt(
   filePath: string,
@@ -31,7 +68,12 @@ export async function processReceipt(
   let ocrMimeType = meta.mimeType;
   let directText: string | null = null;
   let pdfOcrConfidence: number | null = null;
-  let pdfMethod = "direct";
+  // pipeline.pdfMethod tracks the entry path:
+  //   "direct"  → PDF with embedded text (no OCR ran)
+  //   "ocr"     → PDF rasterized + OCR per page
+  //   "image"   → input was already an image, no PDF stage
+  let pdfMethod: "direct" | "ocr" | "image" =
+    meta.mimeType === "application/pdf" ? "direct" : "image";
 
   // 1. PDF Handling
   if (meta.mimeType === "application/pdf") {
@@ -124,10 +166,8 @@ export async function processReceipt(
   const customerCandidates = extractCustomerCandidates(ctxText);
   const identifications = extractClassifiedIdentifications(ctxText);
 
-  // Load accounts once and pass to structure() so the AI can pick a category in the same call.
-  const accounts = await prisma.account
-    .findMany({ select: { id: true, name: true, type: true } })
-    .catch(() => [] as { id: number; name: string; type: string }[]);
+  // Load accounts (cached) so the AI can pick a category in the same call.
+  const accounts = await getAccounts();
 
   const aiStruct = await ai
     .structure({
@@ -142,14 +182,13 @@ export async function processReceipt(
       vendorCandidates,
       customerCandidates,
       identifications,
+      tableRows: reconstructedLayout.tableRows,
       accounts,
     })
     .catch((err) => {
       logger.error("AI Structure failed", err);
       return {} as Partial<ParsedReceipt>;
     });
-  const aiCatResult: Partial<ParsedReceipt> =
-    aiStruct.category != null ? { category: aiStruct.category } : {};
 
   // Financial fields: AI always wins — sees all total candidates and full context.
   // Identity fields: AI fills missing OR corrects obviously wrong values (terminal codes, doc titles).
@@ -187,6 +226,20 @@ export async function processReceipt(
     }
   }
 
+  // 5a-bis. Sanitize identity fields. The AI sometimes echoes raw OCR lines
+  // including cross-column noise (e.g. "DERMA MEDICAL CENTER S.A.        Rodin ity as:").
+  // Truncate everything past 4+ consecutive spaces — that gap signals a column boundary.
+  // Also strip trailing fragmentary words that got glued from neighbouring columns.
+  const stripColumnNoise = (s: string | null | undefined): string | null => {
+    if (!s) return s ?? null;
+    let out = s.replace(/\s{4,}.*$/, "").trim();
+    // Drop short trailing tokens that are obvious OCR fragments (1-3 chars + ":" / "-")
+    out = out.replace(/(\s+\b\w{1,3}[:\-])+$/, "").trim();
+    return out || null;
+  };
+  if (mergedFields.vendorName) mergedFields.vendorName = stripColumnNoise(mergedFields.vendorName);
+  if (mergedFields.customerName) mergedFields.customerName = stripColumnNoise(mergedFields.customerName);
+
   // 5b. Compute missing financial fields using math (subtotal + tax = total)
   const computed = computeFields(mergedFields);
   if (computed.amount != null && mergedFields.amount == null) mergedFields.amount = computed.amount;
@@ -194,8 +247,8 @@ export async function processReceipt(
   if (computed.taxAmount != null && mergedFields.taxAmount == null) mergedFields.taxAmount = computed.taxAmount;
   if (computed.taxPercentage != null && mergedFields.taxPercentage == null) mergedFields.taxPercentage = computed.taxPercentage;
 
-  // 6. Categorization — already resolved in parallel above
-  let categoryId: number | null = aiCatResult.category ?? null;
+  // 6. Categorization — already resolved by structure() above
+  let categoryId: number | null = aiStruct.category ?? null;
 
   if (categoryId === null) {
     categoryId = await categorize(rawText, {
@@ -229,9 +282,10 @@ export async function processReceipt(
     }
   }
 
-  if ((aiStruct as any)._aiWarnings?.length) {
+  const aiWarnings = (aiStruct as { _aiWarnings?: string[] })._aiWarnings;
+  if (aiWarnings?.length) {
     mergedFields.extraFields = mergedFields.extraFields || {};
-    mergedFields.extraFields["Advertencias IA"] = (aiStruct as any)._aiWarnings.join(" | ");
+    mergedFields.extraFields["Advertencias IA"] = aiWarnings.join(" | ");
   }
 
   const json = {
@@ -256,13 +310,13 @@ export async function processReceipt(
     extraFields: mergedFields.extraFields ?? {},
     ocrConfidence: typeof ocrConfidence === "number" ? +ocrConfidence.toFixed(2) : null,
     items: mergedFields.items ?? [],
-    rawText,
     pipeline: {
       pdfMethod,
       parserUsed: parsedResult.parserName,
-    }
+    },
   };
 
+  const aiProviderUsed = (aiStruct as { _aiProviderUsed?: string })._aiProviderUsed;
   const saved = await prisma.receipt.create({
     data: {
       originalName: meta.originalName,
@@ -272,7 +326,7 @@ export async function processReceipt(
       rawText,
       json,
       ocrProvider: process.env.OCR_PROVIDER || "tesseract",
-      aiProvider: (aiStruct as any)._aiProviderUsed || process.env.AI_PROVIDER || "mock",
+      aiProvider: aiProviderUsed || process.env.AI_PROVIDER || "mock",
     },
   });
 

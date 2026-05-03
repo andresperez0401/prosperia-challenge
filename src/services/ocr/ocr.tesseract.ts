@@ -111,9 +111,14 @@ export class TesseractOcr implements OcrProvider {
     }
   }
 
-  /** Try PSM 6 (block) first — best for structured invoices. Fallback to PSM 4 (column) only if needed. */
+  /**
+   * Try PSM modes in order — first "good enough" wins to keep latency bounded:
+   *   PSM 6  (single block)  → structured invoices, dense text
+   *   PSM 4  (single column) → invoices with side-by-side columns
+   *   PSM 11 (sparse)        → small tickets, scattered text on whitespace
+   */
   private async runBestOfModes(filePath: string): Promise<{ result: OcrResult; psm: number }> {
-    const psms = [Tesseract.PSM.SINGLE_BLOCK, Tesseract.PSM.SINGLE_COLUMN];
+    const psms = [Tesseract.PSM.SINGLE_BLOCK, Tesseract.PSM.SINGLE_COLUMN, Tesseract.PSM.SPARSE_TEXT];
     const candidates: { result: OcrResult; psm: number; score: number }[] = [];
 
     for (const psm of psms) {

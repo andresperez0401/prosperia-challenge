@@ -1,4 +1,4 @@
-import { AiProvider, StructureInput } from "./ai.interface.js";
+import { AiProvider, StructureInput, AiStructureResult } from "./ai.interface.js";
 import { ParsedReceipt } from "../../types/receipt.js";
 import { OpenAiProvider } from "./ai.openai.js";
 import { DeepSeekProvider } from "./ai.deepseek.js";
@@ -27,19 +27,18 @@ export class FallbackAiProvider implements AiProvider {
     this.providers.push(new MockAi());
   }
 
-  async structure(input: StructureInput): Promise<Partial<ParsedReceipt>> {
+  async structure(input: StructureInput): Promise<AiStructureResult> {
     const warnings: string[] = [];
     for (let i = 0; i < this.providers.length; i++) {
       try {
-        const result = await this.providers[i].structure(input);
+        const result: AiStructureResult = await this.providers[i].structure(input);
         if (Object.keys(result).length > 0) {
           if (i > 0) {
             logger.info(`AI structure: using provider ${i + 1} (primary failed)`);
           }
-          // Inject metadata so receipts.service.ts can read it
-          (result as any)._aiProviderUsed = this.providers[i].constructor.name;
+          result._aiProviderUsed = this.providers[i].constructor.name;
           if (warnings.length > 0) {
-            (result as any)._aiWarnings = warnings;
+            result._aiWarnings = warnings;
           }
           return result;
         }
@@ -52,9 +51,8 @@ export class FallbackAiProvider implements AiProvider {
       }
     }
     return {
-      // @ts-ignore
       _aiProviderUsed: "None (All Failed)",
-      _aiWarnings: warnings
+      _aiWarnings: warnings,
     };
   }
 

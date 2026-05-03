@@ -1,5 +1,4 @@
-import { PrismaClient } from "@prisma/client";
-const prisma = new PrismaClient();
+import { prisma } from "../../db/client.js";
 
 // Palabras clave → nombre de cuenta contable.
 // El orden importa: la primera coincidencia gana.
@@ -41,10 +40,15 @@ const KEYWORD_MAP: [string, string][] = [
   // Software / Suscripciones
   ["suscrip", "Software/Suscripciones"], ["software", "Software/Suscripciones"],
   ["netflix", "Software/Suscripciones"], ["spotify", "Software/Suscripciones"],
-  ["amazon", "Software/Suscripciones"], ["microsoft", "Software/Suscripciones"],
-  ["adobe", "Software/Suscripciones"], ["google", "Software/Suscripciones"],
+  ["aws", "Software/Suscripciones"],
+  ["microsoft 365", "Software/Suscripciones"], ["microsoft365", "Software/Suscripciones"],
+  ["office 365", "Software/Suscripciones"],
+  ["adobe", "Software/Suscripciones"], ["google workspace", "Software/Suscripciones"],
   ["dropbox", "Software/Suscripciones"], ["zoom", "Software/Suscripciones"],
   ["saas", "Software/Suscripciones"], ["plan mensual", "Software/Suscripciones"],
+  // Note: bare "amazon"/"microsoft"/"google" intentionally excluded — too ambiguous
+  // (Amazon retail, Microsoft hardware, Google Store hardware all map elsewhere).
+  // The AI categorization in structure() handles those nuanced cases.
   // Mantenimiento
   ["mantenim", "Mantenimiento"], ["reparación", "Mantenimiento"],
   ["ferretería", "Mantenimiento"], ["ferreteri", "Mantenimiento"],

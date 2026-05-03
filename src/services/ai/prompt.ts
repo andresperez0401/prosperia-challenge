@@ -15,6 +15,7 @@ Extractor de facturas. Entradas:
 - vendorCandidates[], customerCandidates[]
 - identifications {value,section:vendor|customer|unknown,label}
 - labeledFields {Emisor,Cliente,RUC,...}
+- tableRows [{label,value}] (alineados por bbox del OCR; muy confiables)
 - accounts ["id|name"]
 
 Reglas:
@@ -37,6 +38,8 @@ vendor vs cliente (genérico, multipaís):
 - VE: "Razón Social" suele ser el cliente cuando va en bloque de cliente.
 - PA: típico "Cliente: Nombre".
 - No uses organismos fiscales, encabezados ni códigos de terminal como vendorName.
+- NUNCA uses tipos de documento como vendorName: "FACTURA ELECTRONICA", "ELECTRONICA", "RECIBO", "INVOICE", "COMPROBANTE", "TICKET", "NOTA DE CREDITO/DEBITO", "DGI", "SENIAT" — tampoco si aparecen solas en su línea.
+- vendorName NUNCA debe contener tras 4+ espacios consecutivos texto extra: corta ahí (es ruido de columna del OCR). Mismo rule para customerName.
 
 currency: VES|USD|EUR|COP|MXN|ARS|CLP|PAB|PEN|null. Bs→VES, ITBMS/B/.→PAB, €→EUR, S/.→PEN, $→USD.
 date: "YYYY-MM-DD" o null. paymentMethod: CARD|CASH|TRANSFER|OTHER|null.
@@ -46,8 +49,10 @@ Formato (exacto, no agregar campos, no incluir confidence):
 
 /**
  * Build the user message — token-optimized payload.
- * - rawText capped at 5k chars (covers ~99% of invoices).
- * - reconstructedText only included when it diverges meaningfully from raw.
+ * - rawText capped at 8k chars (covers long multi-page invoices; final TOTAL block
+ *   often lives at the end, so a tighter cap silently dropped it).
+ * - reconstructedText always included when present (column alignment helps the AI
+ *   pair labels with values, even on short tickets where char-diff is small).
  * - Empty arrays / null hint fields are stripped.
  * - rulesExtracted: only non-empty values are sent.
  * - accounts compacted to "id|name" strings.
@@ -56,9 +61,9 @@ export function buildStructurePrompt(input: StructureInput): {
   systemPrompt: string;
   userContent: string;
 } {
-  const raw = input.rawText.slice(0, 5000);
-  const recon = input.reconstructedText?.slice(0, 5000);
-  const includeRecon = recon && Math.abs(recon.length - raw.length) > 200;
+  const raw = input.rawText.slice(0, 8000);
+  const recon = input.reconstructedText?.slice(0, 8000);
+  const includeRecon = !!recon && recon !== raw;
 
   const compactRules = (() => {
     const src = input.partialFields ?? {};
@@ -85,6 +90,7 @@ export function buildStructurePrompt(input: StructureInput): {
   if (input.identifications?.length) payload.identifications = input.identifications;
   if (input.labeledFields && Object.keys(input.labeledFields).length)
     payload.labeledFields = input.labeledFields;
+  if (input.tableRows?.length) payload.tableRows = input.tableRows.slice(0, 80);
   if (accounts.length) payload.accounts = accounts;
   if (input.warnings?.length) payload.warnings = input.warnings;
 

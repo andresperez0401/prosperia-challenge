@@ -37,8 +37,11 @@ export function extractAllTotalCandidates(text: string): TotalCandidate[] {
   const seen = new Set<string>();
   const results: TotalCandidate[] = [];
 
-  // OCR receipts use "TTL" / "SUBTTL" / "TOT" abbreviations alongside "TOTAL"
-  const TOTAL_TOKEN = /\b(total|sub\s*total|sub\s*ttl|subt\.?|ttl|tot\b|importe|monto|neto|amount|balance)\b/i;
+  // OCR receipts use "TTL" / "SUBTTL" / "TOT" abbreviations alongside "TOTAL".
+  // Character classes tolerate Tesseract confusions (O↔0, I↔1↔l, A↔4) so a
+  // garbled "T0TAL" / "T0T4L" / "lMPORTE" still becomes a candidate; the AI
+  // role-classifies it from the surrounding text.
+  const TOTAL_TOKEN = /\b([T7][O0Q][T7][A4@][L1I]|sub\s*[T7][O0Q][T7][A4@][L1I]|sub\s*[T7][T7][L1I]|subt\.?|[T7][T7][L1I]|[T7][O0Q][T7]\b|[Il1][Mm][Pp][Oo0][Rr][T7][Ee3]|[Mm][Oo0][Nn][T7][Oo0]|[Nn][Ee3][T7][Oo0]|amount|balance)\b/i;
 
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -98,7 +101,8 @@ export function extractAllSubtotalCandidates(text: string): AmountCandidate[] {
 export function extractAllTaxCandidates(text: string): AmountCandidate[] {
   const seen = new Set<string>();
   const results: AmountCandidate[] = [];
-  const TAX_TOKEN = /\b(iva|igv|vat|tax|itbms|itbis|impuesto|sales\s+tax)\b/i;
+  // OCR-tolerant: "1VA" / "lVA" / "1GV" still matches.
+  const TAX_TOKEN = /\b([Il1|]V[A4@]|[Il1|]GV|vat|tax|[Il1][T7][BbDd][Mm][S5$]|[Il1][T7][BbDd][Il1][S5$]|impue[s5]to|[s5]ale[s5]\s+tax)\b/i;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || !TAX_TOKEN.test(trimmed)) continue;
@@ -121,7 +125,7 @@ export function extractAllTaxCandidates(text: string): AmountCandidate[] {
 }
 
 const SKIP_VENDOR =
-  /^(seniat|sentat|sen[il]at|providencia|administraci[oó]n\s+tributaria|servicio\s+nacional|ministerio|repúblic|gobierno|national\s+tax|iva\b|tax\s+auth|fecha\b|factura\b|invoice\b|recibo\b|receipt\b|tel[eé]f|fax|e-?mail|www\.|http|rif\b|ruc\b|nit\b|dv\b|comprobante\b|dgi\b|factura\s+de\s+operaci[oó]n|tipo\s+de\s+receptor|emisor\b|cliente\b|receptor\b|direcci[oó]n\b|punto\s+de\s+facturaci[oó]n)/i;
+  /^(seniat|sentat|sen[il]at|providencia|administraci[oó]n\s+tributaria|servicio\s+nacional|ministerio|repúblic|gobierno|national\s+tax|iva\b|tax\s+auth|fecha\b|factura\b|invoice\b|recibo\b|receipt\b|tel[eé]f|fax|e-?mail|www\.|http|rif\b|ruc\b|nit\b|dv\b|comprobante\b|dgi\b|factura\s+de\s+operaci[oó]n|tipo\s+de\s+receptor|emisor\b|cliente\b|receptor\b|direcci[oó]n\b|punto\s+de\s+facturaci[oó]n|electr[oó]nica\b|nota\s+de\s+(?:cr[eé]dito|d[eé]bito)|ticket\b|boleta\b|original\b|copia\b)/i;
 
 /** Returns key→value pairs found by label scanning — sent verbatim to the AI for verification */
 export function extractRawLabeledFields(text: string): Record<string, string> {
