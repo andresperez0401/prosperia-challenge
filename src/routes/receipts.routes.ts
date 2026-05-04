@@ -12,7 +12,7 @@ const ALLOWED_MIME = new Set([
 ]);
 
 const upload = multer({
-  dest: "uploads/",
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
   fileFilter: (_req, file, cb) => {
     if (!ALLOWED_MIME.has(file.mimetype)) {

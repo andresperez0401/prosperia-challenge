@@ -278,6 +278,20 @@ body {
   border-radius: 99px; padding: 2px 9px;
   font-size: .68rem; font-weight: 500; color: var(--g600);
 }
+.file-url {
+  display: inline-block;
+  max-width: 170px;
+  color: var(--brand-dk);
+  font-size: .68rem;
+  font-weight: 600;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.file-url:hover { text-decoration: underline; }
+.muted { color: var(--g400); font-size: .72rem; }
 .receipt-id {
   font-size: .66rem; color: var(--g400);
   font-family: 'Roboto Mono', monospace; margin-top: 5px;

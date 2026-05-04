@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from "express";
-import path from "path";
 import {
-  processReceipt,
+  processUploadedReceipt,
   listReceiptsService,
   getReceiptByIdService,
   reparseReceiptService,
@@ -11,8 +10,8 @@ import { HttpError } from "../utils/errors.js";
 export async function createReceipt(req: Request, res: Response, next: NextFunction) {
   try {
     if (!req.file) throw new HttpError(400, "file is required");
-    const filePath = path.resolve(req.file.path);
-    const saved = await processReceipt(filePath, {
+    if (!req.file.buffer) throw new HttpError(400, "file buffer is required");
+    const saved = await processUploadedReceipt(req.file.buffer, {
       originalName: req.file.originalname,
       mimeType: req.file.mimetype,
       size: req.file.size,

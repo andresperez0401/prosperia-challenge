@@ -82,6 +82,9 @@ model Receipt {
   mimeType      String
   size          Int
   storagePath   String
+  fileUrl       String?
+  cloudinaryPublicId String?
+  cloudinaryResourceType String?
   rawText       String
   json          Json
   ocrProvider   String

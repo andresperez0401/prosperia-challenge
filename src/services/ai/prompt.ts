@@ -23,7 +23,21 @@ Reglas:
 2. subtotalAmount = antes de impuestos. taxAmount = impuesto total (0 si exento). taxPercentage = % (0 si exento).
 3. vendorName = emisor. customerName = cliente. Asigna IDs por identifications.section. No mezcles.
 4. invoiceNumber: nunca etiqueta (FECHA, FACTURA, INVOICE, CLIENTE, TOTAL).
-5. recommendedAccountId: UN id de accounts (o null si no hay).
+5. recommendedAccountId: UN id de accounts basado en la naturaleza del gasto. Guía:
+   - Salud/Farmacia: farmacias, clínicas, hospitales, médicos, dentistas, ópticas, laboratorios, medicamentos, consultas médicas, centros de salud.
+   - Belleza/Cuidado Personal: peluquerías, salones, spas, cosméticos, maquillaje, perfumes, shampoo, cremas, supply beauty.
+   - Tecnología/Hardware: celulares, laptops, monitores, tablets, cables, cargadores, accesorios electrónicos, hardware.
+   - Alimentación: restaurantes, cafeterías, supermercados, delivery de comida, panadería, sushi, pizza, bebidas.
+   - Transporte: uber, taxi, bus, metro, cabify, didi, carreras.
+   - Combustible: gasolineras, diesel, bencina.
+   - Software/Suscripciones: netflix, spotify, aws, adobe, zoom, microsoft 365, planes mensuales, SaaS.
+   - Ropa/Vestimenta: ropa, calzado, boutiques, moda.
+   - Papelería: papel, tinta, impresoras, útiles de oficina (NO electrónicos).
+   - Servicios Públicos: electricidad, agua, internet, telefonía.
+   - Mantenimiento: ferretería, reparaciones, plomería, pintura.
+   - Aseo/Limpieza: lavandería, detergentes, productos de limpieza.
+   - Compras Generales: retail genérico que no encaje en las anteriores.
+   NO uses Alimentación para farmacias o tiendas de belleza. Si la categoría es ambigua, usa Compras Generales.
 6. extraFields: Extrae metadatos adicionales (Ej. Dirección, Teléfono, Cajero, Terminal). Usa claves descriptivas en español.
 7. Sin evidencia → null. No inventes.
 

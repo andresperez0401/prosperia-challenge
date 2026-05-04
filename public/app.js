@@ -49,6 +49,15 @@ function esc(s){
 function show(id){ $(id).style.display='block'; }
 function hide(id){ $(id).style.display='none'; }
 function initial(s){ return (s||'?').charAt(0).toUpperCase(); }
+function fileUrlLink(url, label='URL pública'){
+  if(!url) return '<span class="muted">—</span>';
+  return `<a class="file-url" href="${esc(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="${esc(url)}">${esc(label)}</a>`;
+}
+function storageCell(receipt){
+  if(receipt?.fileUrl) return fileUrlLink(receipt.fileUrl);
+  if(receipt?.storagePath) return '<span class="muted">Local</span>';
+  return '<span class="muted">—</span>';
+}
 
 /* ── progress ────────────────────────────────────────── */
 const STEPS=[
@@ -119,10 +128,11 @@ function render(data){
     ['Moneda',j.currency?`${CSYM[j.currency]||''} ${j.currency}`.trim():null],
     ['Método de pago',j.paymentMethod?PM[j.paymentMethod]:null],
     ['Tipo',j.type?(j.type==='income'?'Ingreso':'Gasto'):null],
+    ['Archivo',storageCell(data)],
     ['Descripción',j.description],
   ].filter(([,v])=>v!=null&&v!=='');
   if(dr.length){
-    $('dg').innerHTML=dr.map(([l,v])=>`<div class="dg-cell"><div class="dg-lbl">${esc(l)}</div><div class="dg-val">${esc(v)}</div></div>`).join('');
+    $('dg').innerHTML=dr.map(([l,v])=>`<div class="dg-cell"><div class="dg-lbl">${esc(l)}</div><div class="dg-val">${l==='Archivo'?v:esc(v)}</div></div>`).join('');
     show('cDetail');
   }
   const extra=j.extraFields||{};
@@ -213,6 +223,8 @@ function openModal(id){
   if(j.currency) kvItems.push(['Moneda',`${CSYM[j.currency]||''} ${j.currency}`.trim()]);
   if(j.type) kvItems.push(['Tipo',j.type==='income'?'Ingreso':'Gasto']);
   if(j.description) kvItems.push(['Descripción',j.description]);
+  if(r.fileUrl) kvItems.push(['Archivo',fileUrlLink(r.fileUrl, r.fileUrl)]);
+  else if(r.storagePath) kvItems.push(['Archivo','<span class="muted">Local</span>']);
   if(kvItems.length){
     sections.push(`<div class="modal-section">
       <div class="sec">Detalles</div>
@@ -291,14 +303,14 @@ async function loadHistory(){
     allReceipts=await r.json();
     renderTable();
   } catch {
-    histBody.innerHTML='<tr><td colspan="6"><div class="tbl-empty">No se pudo cargar el historial.</div></td></tr>';
+    histBody.innerHTML='<tr><td colspan="7"><div class="tbl-empty">No se pudo cargar el historial.</div></td></tr>';
   }
 }
 
 function renderTable(){
   if(!allReceipts.length){
     histMeta.textContent='';
-    histBody.innerHTML=`<tr><td colspan="6"><div class="tbl-empty">
+    histBody.innerHTML=`<tr><td colspan="7"><div class="tbl-empty">
       Sin facturas aún
       <p>Sube una imagen o PDF para comenzar</p>
     </div></td></tr>`;
@@ -325,20 +337,11 @@ function rowHTML(r, idx=0){
   </div></td>
   <td>${esc(date)}</td>
   <td><span class="badge b-purple">${esc(catName)}</span></td>
+  <td>${storageCell(r)}</td>
   <td class="r"><span class="t-amount">${money(j.amount,cur)}</span></td>
   <td class="c"><span class="pill" style="font-size:.64rem">${esc(r.aiProvider||'—')}</span></td>
   <td class="c"><span class="t-arrow">›</span></td>
 </tr>`;
-}
-
-function prependToTable(receipt){
-  allReceipts.unshift(receipt);
-  histMeta.textContent=`${allReceipts.length} registro${allReceipts.length!==1?'s':''}`;
-  const emptyRow=histBody.querySelector('td[colspan]');
-  if(emptyRow) emptyRow.closest('tr').remove();
-  const tmp=document.createElement('tbody');
-  tmp.innerHTML=rowHTML(receipt,0);
-  while(tmp.firstChild) histBody.insertBefore(tmp.firstChild, histBody.firstChild);
 }
 
 /* ── submit ──────────────────────────────────────────── */
@@ -361,7 +364,7 @@ frm.addEventListener('submit', async e=>{
     btn.disabled=false; return;
   }
 
-  prependToTable(data);
+  await loadHistory();
   show('res');
   render(data);
   btn.disabled=false;

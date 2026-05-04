@@ -19,6 +19,9 @@ import { computeFields } from "./parsing/computeFields.js";
 import { logger } from "../config/logger.js";
 import { ParsedReceipt } from "../types/receipt.js";
 import { HttpError } from "../utils/errors.js";
+import { deleteReceiptFromCloudinary, uploadReceiptToCloudinary } from "./storage/cloudinaryStorage.service.js";
+import { saveReceiptLocally } from "./storage/localReceiptStorage.service.js";
+import { withDownloadedReceiptFile, withTempReceiptFile } from "./storage/tempReceiptFile.service.js";
 
 // In-memory cache for accounts list — invalidated every 60s.
 // Accounts rarely change at runtime; avoids hitting the DB on every receipt.
@@ -50,16 +53,90 @@ export async function getReceiptByIdService(id: string) {
 
 export async function reparseReceiptService(id: string) {
   const r = await getReceiptByIdService(id);
+  const storage = {
+    storagePath: r.storagePath,
+    fileUrl: r.fileUrl,
+    cloudinaryPublicId: r.cloudinaryPublicId,
+    cloudinaryResourceType: r.cloudinaryResourceType,
+  };
+
+  if (/^https?:\/\//i.test(r.storagePath)) {
+    return withDownloadedReceiptFile(r.storagePath, {
+      originalName: r.originalName,
+      mimeType: r.mimeType,
+    }, (filePath) => processReceipt(filePath, {
+      originalName: r.originalName,
+      mimeType: r.mimeType,
+      size: r.size,
+    }, storage));
+  }
+
   return processReceipt(r.storagePath, {
     originalName: r.originalName,
     mimeType: r.mimeType,
     size: r.size,
-  });
+  }, storage);
+}
+
+export async function processUploadedReceipt(
+  buffer: Buffer,
+  meta: { originalName: string; mimeType: string; size: number },
+) {
+  let cloudinaryFile: Awaited<ReturnType<typeof uploadReceiptToCloudinary>>;
+
+  try {
+    cloudinaryFile = await uploadReceiptToCloudinary({
+      buffer,
+      originalName: meta.originalName,
+      mimeType: meta.mimeType,
+    });
+  } catch (err) {
+    const localFile = await saveReceiptLocally({
+      buffer,
+      originalName: meta.originalName,
+      mimeType: meta.mimeType,
+    });
+    logger.warn({
+      msg: "Cloudinary upload failed; using local receipt storage",
+      error: err instanceof Error ? err.message : err,
+      storagePath: localFile.storagePath,
+    });
+
+    return processReceipt(localFile.storagePath, meta, {
+      storagePath: localFile.storagePath,
+      fileUrl: null,
+      cloudinaryPublicId: null,
+      cloudinaryResourceType: null,
+    });
+  }
+
+  try {
+    return await withTempReceiptFile(buffer, meta, (filePath) =>
+      processReceipt(filePath, meta, {
+        storagePath: cloudinaryFile.publicUrl,
+        fileUrl: cloudinaryFile.publicUrl,
+        cloudinaryPublicId: cloudinaryFile.publicId,
+        cloudinaryResourceType: cloudinaryFile.resourceType,
+      }),
+    );
+  } catch (err) {
+    await deleteReceiptFromCloudinary({
+      publicId: cloudinaryFile.publicId,
+      resourceType: cloudinaryFile.resourceType,
+    });
+    throw err;
+  }
 }
 
 export async function processReceipt(
   filePath: string,
   meta: { originalName: string; mimeType: string; size: number },
+  storage?: {
+    storagePath?: string;
+    fileUrl?: string | null;
+    cloudinaryPublicId?: string | null;
+    cloudinaryResourceType?: string | null;
+  },
 ) {
   const ocr = getOcrProvider();
   const ai = getAiProvider();
@@ -69,9 +146,9 @@ export async function processReceipt(
   let directText: string | null = null;
   let pdfOcrConfidence: number | null = null;
   // pipeline.pdfMethod tracks the entry path:
-  //   "direct"  → PDF with embedded text (no OCR ran)
-  //   "ocr"     → PDF rasterized + OCR per page
-  //   "image"   → input was already an image, no PDF stage
+  //   "direct"  -> PDF with embedded text (no OCR ran)
+  //   "ocr"     -> PDF rasterized + OCR per page
+  //   "image"   -> input was already an image, no PDF stage
   let pdfMethod: "direct" | "ocr" | "image" =
     meta.mimeType === "application/pdf" ? "direct" : "image";
 
@@ -114,7 +191,7 @@ export async function processReceipt(
         pdfOcrConfidence = totalConf / pageTexts.length;
         logger.info({ msg: "PDF: combined pages", pages: pageTexts.length, textLength: directText.length });
       } else {
-        // All pages failed — fall back to first page
+        // All pages failed - fall back to first page
         targetFilePath = pdfResult.pages[0];
         ocrMimeType = "image/png";
       }
@@ -131,7 +208,7 @@ export async function processReceipt(
     rawText = ocrOut.text;
     ocrConfidence = ocrOut.confidence || 0.5;
   } else if (pdfOcrConfidence !== null) {
-    // directText came from multi-page PDF OCR — use its averaged confidence
+    // directText came from multi-page PDF OCR - use its averaged confidence
     ocrConfidence = pdfOcrConfidence;
   }
 
@@ -190,7 +267,7 @@ export async function processReceipt(
       return {} as Partial<ParsedReceipt>;
     });
 
-  // Financial fields: AI always wins — sees all total candidates and full context.
+  // Financial fields: AI always wins - sees all total candidates and full context.
   // Identity fields: AI fills missing OR corrects obviously wrong values (terminal codes, doc titles).
   // Everything else: AI fills only what rules left empty.
   const FINANCIAL = new Set<keyof ParsedReceipt>(["amount", "subtotalAmount", "taxAmount", "taxPercentage"]);
@@ -203,7 +280,7 @@ export async function processReceipt(
     (typeof val === "string" && val.trim().length === 0);
 
   // A rule-extracted vendor looks "bad" if it's a terminal code or doc title the AI should fix
-  const BAD_VENDOR = /^(DC\d+|POS[\-\s]?\d*|TERM[\-\s]?\d+|CAJA\s*\d+|REG\s*\d+|TML\s*\d+|[A-Z]{1,3}\d{1,4}|Comprobante|Factura de Operaci[oó]n|DGI)$/i;
+  const BAD_VENDOR = /^(DC\d+|POS[\-\s]?\d*|TERM[\-\s]?\d+|CAJA\s*\d+|REG\s*\d+|TML\s*\d+|[A-Z]{1,3}\d{1,4}|Comprobante|Factura de Operaci[o\u00f3]n|DGI)$/i;
 
   for (const key of Object.keys(aiStruct) as (keyof ParsedReceipt)[]) {
     const aiVal = aiStruct[key];
@@ -228,7 +305,7 @@ export async function processReceipt(
 
   // 5a-bis. Sanitize identity fields. The AI sometimes echoes raw OCR lines
   // including cross-column noise (e.g. "DERMA MEDICAL CENTER S.A.        Rodin ity as:").
-  // Truncate everything past 4+ consecutive spaces — that gap signals a column boundary.
+  // Truncate everything past 4+ consecutive spaces - that gap signals a column boundary.
   // Also strip trailing fragmentary words that got glued from neighbouring columns.
   const stripColumnNoise = (s: string | null | undefined): string | null => {
     if (!s) return s ?? null;
@@ -247,7 +324,7 @@ export async function processReceipt(
   if (computed.taxAmount != null && mergedFields.taxAmount == null) mergedFields.taxAmount = computed.taxAmount;
   if (computed.taxPercentage != null && mergedFields.taxPercentage == null) mergedFields.taxPercentage = computed.taxPercentage;
 
-  // 6. Categorization — already resolved by structure() above
+  // 6. Categorization - already resolved by structure() above
   let categoryId: number | null = aiStruct.category ?? null;
 
   if (categoryId === null) {
@@ -263,7 +340,7 @@ export async function processReceipt(
       orderBy: { id: "asc" },
     });
     if (fallback) {
-      logger.warn("Category: using generic fallback → " + fallback.name);
+      logger.warn("Category: using generic fallback -> " + fallback.name);
       categoryId = fallback.id;
     }
   }
@@ -322,7 +399,10 @@ export async function processReceipt(
       originalName: meta.originalName,
       mimeType: meta.mimeType,
       size: meta.size,
-      storagePath: filePath,
+      storagePath: storage?.storagePath || filePath,
+      fileUrl: storage?.fileUrl || null,
+      cloudinaryPublicId: storage?.cloudinaryPublicId || null,
+      cloudinaryResourceType: storage?.cloudinaryResourceType || null,
       rawText,
       json,
       ocrProvider: process.env.OCR_PROVIDER || "tesseract",

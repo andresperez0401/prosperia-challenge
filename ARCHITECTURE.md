@@ -31,11 +31,15 @@ Antes de pasar el control al controller, **Multer hace dos verificaciones**:
 - El archivo no puede pesar más de 10 MB (configurable con `MAX_UPLOAD_BYTES`).
 - El mime type tiene que ser PDF, PNG, JPEG o WebP. Cualquier otra cosa se rechaza ahí mismo.
 
-Si pasa, Multer guarda el archivo en `uploads/` con un nombre aleatorio y le da el path al controller.
+Si pasa, Multer mantiene el archivo en memoria. El controller entrega el buffer al service y el service decide dónde persistir el archivo original.
+
+**Camino principal: Cloudinary.** `processUploadedReceipt()` llama a `uploadReceiptToCloudinary()`. El archivo se sube como asset público (`type=upload`, `access_mode=public`), se toma la `secure_url`, y el service valida que esa URL responda públicamente por HTTP. Para OCR/PDF no se lee desde Cloudinary: se escribe un temporal local, se procesa con Tesseract/pdfHandler, y ese temporal se borra al terminar.
+
+**Fallback simple: servidor local.** Si Cloudinary falla, no está configurado, o rechaza la entrega pública (por ejemplo PDFs bloqueados), el service llama a `saveReceiptLocally()`. Esto guarda el archivo original en `UPLOAD_DIR`, igual que el comportamiento anterior a Cloudinary: el pipeline procesa ese archivo local y en DB queda `storagePath` apuntando a la ruta del servidor. En este caso `fileUrl` queda vacío porque no hay URL pública.
 
 ### Paso 2 — El controller delega
 
-`controllers/receipts.controller.ts/createReceipt` solo hace tres cosas: revisa que efectivamente llegó el archivo, llama a `processReceipt(filePath, meta)` y devuelve el resultado con status 201. No conoce Prisma, ni la IA, ni el OCR. Simplemente HTTP in / HTTP out.
+`controllers/receipts.controller.ts/createReceipt` solo hace tres cosas: revisa que efectivamente llegó el archivo, llama a `processUploadedReceipt(buffer, meta)` y devuelve el resultado con status 201. No conoce Prisma, ni la IA, ni el OCR. Simplemente HTTP in / HTTP out.
 
 ### Paso 3 — El service orquesta el pipeline
 
@@ -221,6 +225,8 @@ Si nada matchea, usa lo que dijo la IA. Si tampoco, default `USD`.
 
 `prisma.receipt.create()` guarda:
 - Metadatos del archivo (`originalName`, `mimeType`, `size`, `storagePath`).
+- URL pública de Cloudinary (`fileUrl`) y metadatos opcionales (`cloudinaryPublicId`, `cloudinaryResourceType`) cuando Cloudinary funcionó.
+- Si Cloudinary funcionó, `storagePath` apunta a la URL pública. Si falló, `storagePath` apunta al archivo local en `UPLOAD_DIR`, como antes de Cloudinary, y `fileUrl` queda vacío.
 - `rawText` en columna propia (preservado intacto, sin truncar).
 - `json` con todos los campos estructurados + un objeto `pipeline` que registra:
   - `pdfMethod`: `"direct"` (PDF con texto), `"ocr"` (PDF rasterizado) o `"image"` (no era PDF).
@@ -229,7 +235,9 @@ Si nada matchea, usa lo que dijo la IA. Si tampoco, default `USD`.
 
 ### Paso 4 — Respuesta al usuario
 
-El controller serializa el registro creado y lo devuelve con HTTP 201. El frontend lo recibe y lo muestra.
+El controller serializa el registro creado y lo devuelve con HTTP 201. El frontend lo recibe y muestra el resultado inmediato.
+
+La tabla de "Facturas procesadas" siempre se obtiene desde la BD mediante `GET /api/receipts` (`prisma.receipt.findMany`). Al cargar la página y después de cada procesamiento, la UI vuelve a consultar ese endpoint en vez de mutar la tabla solo en memoria.
 
 ---
 
@@ -237,9 +245,9 @@ El controller serializa el registro creado y lo devuelve con HTTP 201. El fronte
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| `GET` | `/api/receipts` | Lista las últimas 100 facturas. Va por el service que cachea nada (la BD ya es rápida). |
+| `GET` | `/api/receipts` | Lista las últimas 100 facturas desde la BD para alimentar la tabla de facturas procesadas. |
 | `GET` | `/api/receipts/:id` | Detalle por ID. 404 si no existe. |
-| `POST` | `/api/receipts/:id/reparse` | Vuelve a procesar el archivo original con el pipeline actual. Útil cuando se mejora un parser y quieres re-evaluar facturas viejas. Lee de `storagePath`. |
+| `POST` | `/api/receipts/:id/reparse` | Vuelve a procesar el archivo original con el pipeline actual. Útil cuando se mejora un parser y quieres re-evaluar facturas viejas. Si `storagePath` es una URL de Cloudinary, lo descarga a un temporal y lo borra al finalizar. |
 | `GET` | `/health` | Liveness simple. |
 | `GET` | `/api/relay/ping` | Test de conectividad al relay OpenAI. Devuelve latencia y modelo. |
 
@@ -260,6 +268,12 @@ TESSDATA_DIR=.                   # carpeta con eng.traineddata + spa.traineddata
 
 PORT=3010
 MAX_UPLOAD_BYTES=10485760        # opcional, default 10MB
+UPLOAD_DIR=./uploads             # fallback local si Cloudinary falla
+
+CLOUDINARY_CLOUD_NAME=<cloud-name>
+CLOUDINARY_API_KEY=<api-key>
+CLOUDINARY_API_SECRET=<api-secret>
+CLOUDINARY_FOLDER=prosperia/receipts
 ```
 
 ---
@@ -341,7 +355,7 @@ src/
 prisma/                        → schema + migrations + seed (cuentas iniciales)
 public/                        → UI estática (HTML/CSS/JS)
 samples/                       → facturas de prueba
-uploads/                       → archivos subidos por Multer (se crea en runtime)
+uploads/                       → fallback local cuando Cloudinary falla
 
 tests/
   parsing/                     → un archivo por función del parser (10 archivos, 55 tests)
