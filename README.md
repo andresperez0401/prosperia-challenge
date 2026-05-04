@@ -4,7 +4,8 @@ Sube una factura (PDF o imagen) y el sistema extrae automáticamente los datos, 
 
 ## URL de la app
 
-https://prosperia-challenge-production.up.railway.app/
+
+https://www.mini-prosperia.site/
 
 
 **Qué hace:**

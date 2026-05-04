@@ -2,100 +2,79 @@
 
 ## Testing Framework
 
-**Jest** — Framework de testing para Node.js + TypeScript
+**Vitest** — Framework de testing ultrarrápido nativo para Vite/Node.js, ideal para TypeScript. En este proyecto usamos Vitest porque no requiere precompilar TypeScript ni configuración pesada.
 
 ## Correr Tests
 
 ```bash
-# Todos los tests
+# Todos los tests (se ejecuta una vez y da el resultado final)
 npm test
 
+# Watch mode (se queda escuchando y re-corre automáticamente al guardar un archivo)
+npm run test:watch
+
 # Un archivo específico
-npm test -- parser.test.ts
-
-# Con coverage (ver qué código está cubierto)
-npm test -- --coverage
-
-# Watch mode (re-corre al guardar)
-npm test -- --watch
-
-# Solo un test dentro de un archivo
-npm test -- --testNamePattern="extractAmount"
+npx vitest tests/parsing/extractTotal.test.ts
 ```
 
 ## Estructura de Tests
 
+Actualmente el sistema cuenta con **55 tests** enfocados en el corazón de la aplicación: la lógica de parsing y normalización de texto OCR. Estos viven dentro de la carpeta `tests/parsing/`.
+
 ```
 tests/
-├── unit/
-│   ├── parser.test.ts           → Extracción de campos
-│   ├── normalizers.test.ts      → Limpieza de datos
-│   ├── computeFields.test.ts    → Validación matemática
-│   ├── categorizer.test.ts      → Clasificación contable
-│   └── ocr.test.ts              → Lectura de texto
-│
-├── integration/
-│   └── pipeline.test.ts         → Flujo completo
-│
-└── fixtures/
-    ├── receipts/                 → PDFs de prueba
-    ├── images/                   → Imágenes de prueba
-    └── mocks.ts                  → Datos mock
+  parsing/                     → un archivo por función del parser (10 archivos, 55 tests)
+    parseAmount.test.ts          → normalización de montos
+    extractTotal.test.ts         → extracción del total final
+    extractSubtotal.test.ts      → extracción del subtotal / base imponible
+    extractTax.test.ts           → extracción del monto de impuesto
+    extractTaxPercentage.test.ts → extracción del porcentaje de impuesto
+    extractDate.test.ts          → parseo de fechas en múltiples formatos
+    extractVendorName.test.ts    → detección del nombre del comercio
+    extractVendorIds.test.ts     → extracción de IDs fiscales (RUC, NIT, EIN)
+    reconcile.test.ts            → matemática de validación financiera
+    naiveParse.test.ts           → integración completa + factura real DGI Panamá
 ```
 
-## Tests Existentes
+## Tests Existentes (Qué Prueban)
 
-### Parser Unit Tests (`tests/unit/parser.test.ts`)
-✓ `extractAmount` — Detecta montos en múltiples formatos
-✓ `extractSubtotal` — Encuentra subtotal
-✓ `extractTax` — Extrae IVA
-✓ `extractVendorName` — Detecta tienda
-✓ `findDate` — Reconoce fechas (20+ formatos)
-✓ `extractInvoiceNumber` — Número de factura
-✓ `normalizeAmount` — Convierte strings a números
+**`parseAmount`** — verifica que el normalizador de montos entiende los formatos europeo (`1.234,56`) y americano (`1,234.56`). También prueba enteros, decimales simples, strings vacíos y texto no numérico.
 
-### Normalizers Unit Tests (`tests/unit/normalizers.test.ts`)
-✓ `normalizeAmount` — EU ("15.212,97"), US ("1,234.56"), con moneda
-✓ `normalizeDate` — Todos los formatos de fecha
-✓ `detectCurrency` — Bs → VES, € → EUR, $ → USD
-✓ `normalizeIdentification` — RIF, NIT, RUC, CIF
+**`extractTotal`** — confirma que la función encuentra el total en frases como `"total: $12.50"`, `"total a pagar: 100.00"` y `"grand total: 99.99"`, y devuelve `null` cuando no hay ninguna.
 
-### OCR Unit Tests (`tests/unit/ocr.test.ts`)
-✓ OCR mock sin Tesseract real
-✓ Selecciona variante correcta por score
-✓ Maneja múltiples PSMs (4, 6, 11)
+**`extractSubtotal`** — prueba variantes de la etiqueta: `"subtotal: 50.00"`, `"base imponible: 80.00"`, `"neto: 90.00"`, y también el caso de fusión de columnas de OCR (`"subtotal500"` sin separador).
 
-### Integration Test (`tests/integration/pipeline.test.ts`)
-✓ Flujo completo: PDF → OCR → Parsing → IA → DB
-✓ Verifica que todos los campos se llenen
-✓ Valida estructura de respuesta
+**`extractTax`** — verifica que extrae el monto del impuesto en formatos de IVA, tax, IGV, y que no confunde el porcentaje con el monto cuando aparece `"iva 21% 105€"`.
 
-### Compute Fields Tests (`tests/unit/computeFields.test.ts`)
-✓ Calcula faltantes: subtotal + tax = total
-✓ Tolerancia de 6 centavos
-✓ No sobrescribe campos existentes
+**`extractTaxPercentage`** — comprueba que lee el porcentaje de líneas como `"iva 12%"` o `"total con 19% de iva"`, y devuelve `null` si no hay porcentaje.
 
-### Categorizer Tests (`tests/unit/categorizer.test.ts`)
-✓ Heurística por keywords (uber → transporte)
-✓ Fallback a DB si IA falla
-✓ Fuzzy match para variantes
+**`extractDate`** — cubre más de 20 formatos de fecha: `YYYY-MM-DD`, `DD-MM-YYYY`, formato libre en español (`"el 5 de enero de 2024"`), y devuelve `null` cuando no hay fecha.
+
+**`extractVendorName`** — verifica que prefiere una línea en mayúsculas como nombre del comercio y que devuelve la primera línea no ruidosa.
+
+**`extractVendorIds`** — extrae identificaciones fiscales: RUC Perú (`20123456789`), NIT Colombia (`900123456-1`), EIN USA (`12-3456789`), devolviendo array vacío si no encuentra.
+
+**`reconcile`** — prueba la matemática de validación financiera: si tenemos dos de los tres valores (`subtotal`, `tax`, `total`), el tercero se puede calcular.
+
+**`naiveParse` (integración)** — pasa un recibo completo de texto crudo y verifica que el parser genérico devuelva todos los campos correctamente (`amount`, `subtotalAmount`, `taxAmount`, `taxPercentage`, `date`, `invoiceNumber`, `vendorName` e `vendorIdentifications`) en un solo paso. Además incluye un test de **factura real (DGI Panamá)**.
 
 ## Escribir Nuevos Tests
 
-### Template Básico
+### Template Básico (`vitest`)
 ```typescript
-import { extractAmount } from "../src/services/parsing/parser";
+import { describe, it, expect } from "vitest";
+import { parseAmount } from "../../src/services/parsing/parser.js";
 
-describe("extractAmount", () => {
+describe("parseAmount", () => {
   it("debe extraer monto en formato EU", () => {
-    const text = "TOTAL: 15.212,97";
-    const result = extractAmount(text);
+    const text = "15.212,97";
+    const result = parseAmount(text);
     expect(result).toBe(15212.97);
   });
 
-  it("debe retornar null si no encuentra monto", () => {
+  it("debe retornar null si recibe basura", () => {
     const text = "sin monto aqui";
-    const result = extractAmount(text);
+    const result = parseAmount(text);
     expect(result).toBeNull();
   });
 });
@@ -103,147 +82,23 @@ describe("extractAmount", () => {
 
 ### Buenas Prácticas
 
-1. **Test una cosa por test**
+1. **Testea una función por archivo:** Mantén la convención de `tests/parsing/[nombreFuncion].test.ts`.
+2. **Casos reales:** Si el OCR falla leyendo un recibo en producción, saca la línea problemática exacta del log, agrégala como test fallido, y luego arregla el parser para que la lea.
+3. **Casos de prueba iterativos (`it.each`):** Vitest permite correr decenas de casos en una sola declaración para funciones de parsing:
    ```typescript
-   // ❌ Malo
-   it("procesa factura completa", () => {
-     // 10 assertions diferentes
-   });
-
-   // ✅ Bien
-   it("extrae monto de factura", () => {
-     expect(extractAmount("TOTAL: 100")).toBe(100);
-   });
-   ```
-
-2. **Usa fixtures (datos de prueba)**
-   ```typescript
-   import { mockReceipt } from "../fixtures/mocks";
-
-   it("valida estructura de factura", () => {
-     expect(mockReceipt).toHaveProperty("amount");
-   });
-   ```
-
-3. **Mock dependencias externas**
-   ```typescript
-   jest.mock("../services/ai");
-
-   it("usa fallback si IA falla", async () => {
-     const result = await categorize({ vendorName: "test" });
-     expect(result.category).toBeDefined();
-   });
-   ```
-
-4. **Tests parametrizados (múltiples casos)**
-   ```typescript
-   describe.each([
+   it.each([
      ["15.212,97", 15212.97],
      ["1,234.56", 1234.56],
      ["100", 100],
-   ])("normalizeAmount('%s')", (input, expected) => {
-     expect(normalizeAmount(input)).toBe(expected);
+   ])("debería parsear '%s' como %f", (input, expected) => {
+     expect(parseAmount(input)).toBe(expected);
    });
    ```
-
-## Coverage (Cobertura de Código)
-
-```bash
-npm test -- --coverage
-```
-
-Genera reporte en `coverage/`:
-- **Statements** — % de líneas ejecutadas
-- **Branches** — % de if/else ejecutados
-- **Functions** — % de funciones llamadas
-- **Lines** — % de líneas de código
-
-**Meta:** 80%+ de coverage en funciones críticas.
-
-## Mocking
-
-### Mock del OCR (sin Tesseract real)
-```typescript
-import { MockOcr } from "../src/services/ocr/ocr.mock";
-
-const ocr = new MockOcr();
-const result = await ocr.extractText("test.jpg");
-```
-
-### Mock de IA (sin API externa)
-```typescript
-process.env.AI_PROVIDER = "mock";
-
-const ai = getAiProvider();
-const result = await ai.structure({ rawText: "..." });
-```
-
-### Mock de Base de Datos (Prisma)
-```typescript
-jest.mock("../src/lib/prisma", () => ({
-  receipt: {
-    create: jest.fn().mockResolvedValue({ id: 1 }),
-  },
-}));
-```
-
-## Fixtures (Datos de Prueba)
-
-```typescript
-// tests/fixtures/receipts.ts
-export const sampleReceipt = {
-  rawText: "TOTAL: 15.212,97",
-  parsed: {
-    amount: 15212.97,
-    vendorName: "BALU",
-    currency: "VES",
-  },
-};
-```
-
-Úsalos en tests:
-```typescript
-import { sampleReceipt } from "../fixtures/receipts";
-
-it("procesa factura de ejemplo", () => {
-  const result = parseReceipt(sampleReceipt.rawText);
-  expect(result.amount).toBe(sampleReceipt.parsed.amount);
-});
-```
-
-## CI/CD Integration
-
-En GitHub Actions (`.github/workflows/test.yml`):
-```yaml
-name: Tests
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: "20"
-      - run: npm install
-      - run: npm test -- --coverage
-      - uses: codecov/codecov-action@v3
-```
 
 ## Solucionar Tests Fallidos
 
 **"Cannot find module"**
-- Verificar import paths (case-sensitive en Linux)
-- Limpiar cache: `npm test -- --clearCache`
+- Asegúrate de importar desde `.js` al final aunque el archivo sea `.ts` (Requisito de Node ESM). Ej: `import { func } from "./file.js"`.
 
 **Timeout en tests**
-- Aumentar timeout: `jest.setTimeout(10000)`
-- Mock dependencias lentas
-
-**Mock no funciona**
-- Verificar que mock esté antes de import
-- Usar `jest.resetModules()` entre tests
-
-**Tests de Tesseract fallan**
-- Usar mock en lugar de OCR real
-- O instalar Tesseract: `choco install tesseract-ocr`
+- Si implementas tests pesados de IA u OCR, aumenta el timeout en Vitest o mockea los servicios externos. Actualmente todos los tests son de parsing puro y tardan escasos milisegundos.
